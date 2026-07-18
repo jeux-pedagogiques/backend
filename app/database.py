@@ -13,6 +13,15 @@ engine = create_engine(DATABASE_URL, echo=True)
 def create_db_and_tables():
     """Create all tables defined by SQLModel metadata."""
     SQLModel.metadata.create_all(engine)
+    
+    # Automatically add quiz_data column if it doesn't exist
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE module_analyses ADD COLUMN IF NOT EXISTS quiz_data JSON;"))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def get_session():

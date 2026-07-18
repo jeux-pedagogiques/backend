@@ -287,15 +287,27 @@ async def websocket_endpoint(
 
         # 2. Check if username is already taken in this room
         if room_id in active_rooms:
+            reconnecting_client = None
             for client in active_rooms[room_id]:
                 if client.get("name", "").strip().lower() == name.strip().lower():
-                    await websocket.accept()
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Le nom '{name}' est déjà utilisé dans cette séance. Veuillez en choisir un autre."
-                    })
-                    await websocket.close(code=4001)
-                    return
+                    if client.get("client_id") == client_id:
+                        reconnecting_client = client
+                    else:
+                        await websocket.accept()
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Le nom '{name}' est déjà utilisé dans cette séance. Veuillez en choisir un autre."
+                        })
+                        await websocket.close(code=4001)
+                        return
+            
+            if reconnecting_client:
+                logger.info(f"Reconnection detected for client {client_id} ({name}). Closing old connection.")
+                try:
+                    await reconnecting_client["websocket"].close()
+                except Exception as e:
+                    logger.debug(f"Failed to close old websocket for client {client_id}: {e}")
+                active_rooms[room_id] = [c for c in active_rooms[room_id] if c["client_id"] != client_id]
 
     # Accept the connection if all checks pass
     await websocket.accept()

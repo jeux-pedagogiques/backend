@@ -25,4 +25,7 @@ class ModuleAnalysis(SQLModel, table=True):
     estimated_duration: Optional[str] = Field(default=None, max_length=100)
     target_audience: Optional[str] = Field(default=None, max_length=255)
 
+    # Cached generated quiz data to avoid re-generating
+    quiz_data: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -183,8 +183,8 @@ async def analyze_module(
     data: AnalyzeRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """Analyze module content using Gemini AI to extract learning outcomes, Bloom levels, etc."""
-    from app.services.gemini_service import analyze_module_content
+    """Analyze and self-correct module content using Gemini to extract verified learning outcomes."""
+    from app.services.gemini_service import analyze_and_correct_module
 
     if not data.content.strip():
         raise HTTPException(
@@ -193,7 +193,7 @@ async def analyze_module(
         )
 
     try:
-        result = await analyze_module_content(data.content)
+        result = await analyze_and_correct_module(data.content)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -250,7 +250,9 @@ class SavedAnalysisResponse(BaseModel):
     central_notions: list[str] = []
     estimated_duration: str | None = None
     target_audience: str | None = None
+    quiz_data: dict | None = None
     created_at: datetime
+
 
 
 @router.post("/history", response_model=SavedAnalysisResponse)
@@ -292,6 +294,7 @@ async def save_analysis_history(
         central_notions=history_entry.central_notions,
         estimated_duration=history_entry.estimated_duration,
         target_audience=history_entry.target_audience,
+        quiz_data=history_entry.quiz_data,
         created_at=history_entry.created_at,
     )
 
@@ -326,6 +329,7 @@ async def list_analysis_history(
                 central_notions=entry.central_notions,
                 estimated_duration=entry.estimated_duration,
                 target_audience=entry.target_audience,
+                quiz_data=entry.quiz_data,
                 created_at=entry.created_at,
             )
         )
@@ -354,3 +358,73 @@ async def delete_analysis_history(
 
     session.delete(entry)
     session.commit()
+
+
+# ============ QUIZ GENERATION ============
+
+class GenerateQuizRequest(BaseModel):
+    nb_questions: int = 5
+    duree_par_question: int = 30
+    mode: str = "formatif"  # "compétitif" | "collaboratif" | "formatif"
+    question_types: list[str] = ["qcm", "vrai_faux"]
+    force: bool = False
+
+
+@router.post("/history/{analysis_id}/quiz")
+async def generate_quiz(
+    analysis_id: int,
+    data: GenerateQuizRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Generate a timed ludified quiz based on a saved module analysis."""
+    # 1. Fetch module analysis
+    entry = session.get(ModuleAnalysis, analysis_id)
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fiche module introuvable.",
+        )
+
+    if entry.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non autorisé à accéder à cette fiche module.",
+        )
+
+    # 1.5. If quiz is already generated and force is False, return it
+    if entry.quiz_data and not data.force:
+        return entry.quiz_data
+
+    # 2. Call Gemini service to generate quiz
+    from app.services.gemini_service import generate_quiz_from_outcomes
+
+    try:
+        quiz_data = await generate_quiz_from_outcomes(
+            learning_outcomes=entry.learning_outcomes,
+            key_concepts=entry.key_concepts,
+            keywords=entry.keywords,
+            nb_questions=data.nb_questions,
+            duree_par_question=data.duree_par_question,
+            mode=data.mode,
+            question_types=data.question_types
+        )
+        
+        # Save to DB for future requests
+        entry.quiz_data = quiz_data
+        session.add(entry)
+        session.commit()
+        session.refresh(entry)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Erreur lors de la génération du quiz par l'IA : {str(e)}",
+        )
+
+    return quiz_data
+
