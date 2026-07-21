@@ -1,9 +1,9 @@
-\"\"\"Create quizzes and library_items tables with FTS support.
+"""Create quizzes and library_items tables with FTS support.
 
 Revision ID: e5f6a7b8c9d0
 Revises: d4e5f6a7b8c9
 Create Date: 2026-07-21
-\"\"\"
+"""
 
 from alembic import op
 import sqlalchemy as sa
@@ -58,7 +58,7 @@ def upgrade() -> None:
     )
 
     # ---- FTS trigger function ----
-    op.execute(\"\"\"
+    op.execute("""
         CREATE OR REPLACE FUNCTION library_items_search_update() RETURNS trigger AS $$
         BEGIN
             NEW.search_vector := to_tsvector('french',
@@ -74,13 +74,13 @@ def upgrade() -> None:
             RETURN NEW;
         END
         $$ LANGUAGE plpgsql;
-    \"\"\")
+    """)
 
-    op.execute(\"\"\"
+    op.execute("""
         CREATE TRIGGER trg_library_items_search
         BEFORE INSERT OR UPDATE ON library_items
         FOR EACH ROW EXECUTE FUNCTION library_items_search_update();
-    \"\"\")
+    """)
 
 
 def downgrade() -> None:
