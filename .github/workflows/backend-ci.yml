@@ -2,9 +2,9 @@ name: Backend CI & Security
 
 on:
   push:
-    branches: [ "main", "master", "develop" ]
+    branches: [ "main", "master", "develop", "spring_1" ]
   pull_request:
-    branches: [ "main", "master", "develop" ]
+    branches: [ "main", "master", "develop", "spring_1" ]
 
 jobs:
   backend-ci:
@@ -52,7 +52,7 @@ jobs:
           fetch-depth: 0
 
       - name: Gitleaks Secret Scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: zricethezav/gitleaks-action@master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
