@@ -413,6 +413,39 @@ async def generate_quiz(
         # Save to DB for future requests
         entry.quiz_data = quiz_data
         session.add(entry)
+
+        # Also create a dedicated Quiz record for the library
+        from app.models.quiz import Quiz
+        from app.services.library_service import register_library_item
+
+        quiz = Quiz(
+            user_id=current_user.id,
+            module_id=analysis_id,
+            titre=quiz_data.get("titre_quiz", f"Quiz — {entry.module_title}"),
+            nb_questions=data.nb_questions,
+            mode=data.mode,
+            quiz_data=quiz_data,
+            module_title=entry.module_title,
+        )
+        session.add(quiz)
+        session.flush()
+
+        niveaux = list({
+            lo.get("bloom_level", "")
+            for lo in entry.learning_outcomes
+            if lo.get("bloom_level")
+        })
+        register_library_item(
+            session,
+            user_id=current_user.id,
+            game_type="quiz",
+            game_id=quiz.id,
+            module_id=analysis_id,
+            titre=quiz.titre,
+            niveaux_bloom=niveaux,
+            concepts_cles=entry.key_concepts or [],
+        )
+
         session.commit()
         session.refresh(entry)
     except ValueError as e:

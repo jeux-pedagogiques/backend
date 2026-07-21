@@ -5,5 +5,8 @@ from app.models.live_session import LiveSession, LiveSessionParticipant, Schedul
 from app.models.escape_room import EscapeRoom  # noqa: F401
 from app.models.pitching import PitchingSession, PitchingTeam, PitchingVote, PitchingFeedback  # noqa: F401
 from app.models.flashcard import FlashcardSet, Flashcard, FlashcardReview  # noqa: F401
+from app.models.quiz import Quiz  # noqa: F401
+from app.models.library_item import LibraryItem  # noqa: F401
+
 
 

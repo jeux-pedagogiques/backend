@@ -71,6 +71,24 @@ async def generate_flashcards(
         )
         session.add(card)
 
+    # Register in the unified library catalogue
+    from app.services.library_service import register_library_item
+    niveaux = list({
+        lo.get("bloom_level", "")
+        for lo in entry.learning_outcomes
+        if lo.get("bloom_level")
+    })
+    register_library_item(
+        session,
+        user_id=current_user.id,
+        game_type="flashcards",
+        game_id=flashcard_set.id,
+        module_id=data.module_id,
+        titre=flashcard_set.titre,
+        niveaux_bloom=niveaux,
+        concepts_cles=entry.key_concepts or [],
+    )
+
     session.commit()
     session.refresh(flashcard_set)
 

@@ -1,0 +1,17 @@
+name: Backend CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  deploy-backend:
+    name: Deploy FastAPI Service
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy FastAPI Backend
+        run: |
+          echo "Deploying FastAPI backend application..."

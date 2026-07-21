@@ -1,4 +1,9 @@
-"""Service for analyzing module sheets using the Gemini AI API."""
+"""Service for analyzing module sheets using AI APIs.
+
+Provider chain (tried in order):
+  1. Kimi K3 (Moonshot AI) — primary, OpenAI-compatible
+  2. Gemini (Google) — fallback
+"""
 
 import asyncio
 import json
@@ -17,32 +22,130 @@ MAX_RETRIES_PER_MODEL = 2
 # Default wait in seconds when the server doesn't specify a retry delay
 DEFAULT_RETRY_DELAY = 55.0
 
-# Fallback models to try when the primary model's quota is exhausted or unavailable.
-# Free-tier quota is PER-MODEL (20 req/day each), so switching models
-# gives us access to a fresh quota bucket.
-FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.0-flash"]
+KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+KIMI_MODEL = "kimi-k3"
+
+# Fallback Gemini models to try when the primary model's quota is exhausted
+GEMINI_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.0-flash"]
 
 
-def _get_api_url_for_model(model: str) -> str:
-    """Build the Gemini API URL for a specific model."""
+# ── Kimi (Moonshot) helpers ────────────────────────────────────
+
+
+def _kimi_headers() -> dict:
+    api_key = os.getenv("MOONSHOT_API_KEY")
+    if not api_key:
+        return {}
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def _gemini_to_kimi_payload(payload: dict) -> dict:
+    """Convert a Gemini-style payload to Kimi (OpenAI-compatible) format."""
+    # Extract the system message and user message from Gemini contents
+    contents = payload.get("contents", [])
+    messages = []
+    system_content = None
+
+    for c in contents:
+        role = c.get("role", "user")
+        parts = c.get("parts", [])
+        text_parts = [p.get("text", "") for p in parts if "text" in p]
+        text = "\n".join(text_parts)
+
+        if role == "user" or not system_content:
+            messages.append({"role": "user", "content": text})
+        else:
+            # Treat first non-user as system
+            system_content = text
+
+    generation_config = payload.get("generationConfig", {})
+    max_tokens = generation_config.get("maxOutputTokens", 16384)
+    temperature = generation_config.get("temperature", 0.3)
+
+    kimi_payload = {
+        "model": KIMI_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if system_content:
+        kimi_payload["messages"] = [
+            {"role": "system", "content": system_content},
+            *kimi_payload["messages"],
+        ]
+
+    response_schema = generation_config.get("responseSchema")
+    response_mime = generation_config.get("responseMimeType")
+    if response_schema and response_mime == "application/json":
+        kimi_payload["response_format"] = {"type": "json_object"}
+
+    return kimi_payload
+
+
+async def _try_kimi(payload: dict, timeout: float) -> dict | None:
+    """Try calling Kimi K3. Returns parsed JSON or None on failure."""
+    headers = _kimi_headers()
+    if not headers:
+        logger.info("MOONSHOT_API_KEY not configured, skipping Kimi.")
+        return None
+
+    kimi_payload = _gemini_to_kimi_payload(payload)
+    url = f"{KIMI_BASE_URL}/chat/completions"
+
+    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=kimi_payload, headers=headers)
+        except Exception as e:
+            logger.warning("Kimi request failed (attempt %d/%d): %s", attempt, MAX_RETRIES_PER_MODEL, e)
+            if attempt < MAX_RETRIES_PER_MODEL:
+                await asyncio.sleep(DEFAULT_RETRY_DELAY)
+                continue
+            return None
+
+        if response.status_code == 429:
+            if attempt < MAX_RETRIES_PER_MODEL:
+                logger.warning("Kimi rate limited (429), retrying in %.1fs...", DEFAULT_RETRY_DELAY)
+                await asyncio.sleep(DEFAULT_RETRY_DELAY)
+                continue
+            return None
+        elif response.status_code in (404, 500, 502, 503):
+            logger.warning("Kimi returned %d, falling back.", response.status_code)
+            return None
+        elif response.status_code != 200:
+            logger.warning("Kimi returned %d: %s, falling back.", response.status_code, response.text[:200])
+            return None
+
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.warning("Kimi unexpected response format: %s", e)
+            return None
+
+    return None
+
+
+# ── Gemini helpers ─────────────────────────────────────────────
+
+
+def _gemini_api_url_for_model(model: str) -> str:
     return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
 def _adapt_thinking_config(generation_config: dict, model: str) -> dict:
-    """Adjust thinkingConfig for the target model since different model
-    families use different thinking parameters."""
     config = {k: v for k, v in generation_config.items() if k != "thinkingConfig"}
     model_lower = model.lower()
     if "3.5" in model_lower:
         config["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
     elif "2.5" in model_lower:
         config["thinkingConfig"] = {"thinkingBudget": 0}
-    # gemini-2.0 and earlier don't support thinkingConfig at all
     return config
 
 
 def _parse_retry_delay(response) -> float:
-    """Extract the server-suggested retry delay from a 429 response."""
     try:
         err_body = response.json()
         details = err_body.get("error", {}).get("details", [])
@@ -57,17 +160,10 @@ def _parse_retry_delay(response) -> float:
     return DEFAULT_RETRY_DELAY
 
 
-async def _try_model(api_key: str, model: str, payload: dict, timeout: float) -> dict:
-    """Try calling a specific Gemini model with retry logic.
+async def _try_gemini_model(api_key: str, model: str, payload: dict, timeout: float) -> dict | None:
+    """Try calling a specific Gemini model with retry logic."""
+    url = f"{_gemini_api_url_for_model(model)}?key={api_key}"
 
-    Returns the parsed JSON response on success.
-    Raises RuntimeError on other fatal errors.
-    Returns None if the model is rate-limited, deprecated, or experiencing high demand
-    to allow the caller to try a fallback model.
-    """
-    url = f"{_get_api_url_for_model(model)}?key={api_key}"
-
-    # Adapt the thinkingConfig in the payload for this model
     adapted_payload = dict(payload)
     if "generationConfig" in adapted_payload:
         adapted_payload["generationConfig"] = _adapt_thinking_config(
@@ -93,15 +189,12 @@ async def _try_model(api_key: str, model: str, payload: dict, timeout: float) ->
                 await asyncio.sleep(retry_delay)
                 continue
             else:
-                # All retries exhausted for this model
                 logger.warning(
                     "Gemini API quota exhausted for model '%s' after %d attempts.",
                     model, MAX_RETRIES_PER_MODEL
                 )
                 return None
         elif response.status_code in (404, 500, 503):
-            # Model not found/deprecated (404) or server error/overloaded (500/503)
-            # Skip and try next fallback
             logger.warning(
                 "Gemini model '%s' returned status %d. Skipping to next model.",
                 model, response.status_code
@@ -116,40 +209,51 @@ async def _try_model(api_key: str, model: str, payload: dict, timeout: float) ->
     return None
 
 
-async def _call_gemini_api(payload: dict, timeout: float = 120.0) -> dict:
-    """Send a request to the Gemini API with automatic retry and model fallback.
-
-    When the primary model's free-tier quota (20 req/day) is exhausted,
-    automatically falls back to alternative models that have their own
-    separate quota buckets.
-    """
+async def _call_gemini_impl(payload: dict, timeout: float = 120.0) -> dict:
+    """Call Gemini with model fallback (internal)."""
     api_key, primary_model, _ = get_gemini_config()
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
 
-    # Build list of models to try: primary first, then fallbacks
     models_to_try = [primary_model]
-    for fb in FALLBACK_MODELS:
+    for fb in GEMINI_FALLBACK_MODELS:
         if fb.lower() != primary_model.lower() and fb not in models_to_try:
             models_to_try.append(fb)
 
     for model in models_to_try:
         if model != primary_model:
-            logger.info("Falling back to alternative model: %s", model)
+            logger.info("Falling back to alternative Gemini model: %s", model)
 
-        result = await _try_model(api_key, model, payload, timeout)
+        result = await _try_gemini_model(api_key, model, payload, timeout)
         if result is not None:
             if model != primary_model:
-                logger.info("Successfully used fallback model: %s", model)
+                logger.info("Successfully used fallback Gemini model: %s", model)
             return result
 
-    # All models exhausted
     raise RuntimeError(
         f"Quota Gemini API épuisée pour tous les modèles disponibles "
         f"({', '.join(models_to_try)}). "
         f"Limite du plan gratuit atteinte (20 requêtes/jour par modèle). "
         f"Veuillez réessayer plus tard ou passer à un plan payant."
     )
+
+
+# ── Public entry point: Kimi → Gemini fallback ────────────────
+
+
+async def _call_gemini_api(payload: dict, timeout: float = 120.0) -> dict:
+    """Send a request to the AI API with provider fallback.
+
+    Tries Kimi K3 first. Falls back to Gemini (with model fallback chain)
+    if Kimi is unavailable, rate-limited, or returns an error.
+    """
+    result = await _try_kimi(payload, timeout)
+    if result is not None:
+        logger.info("Successfully used Kimi K3")
+        return result
+
+    logger.info("Kimi K3 unavailable, falling back to Gemini...")
+    return await _call_gemini_impl(payload, timeout)
 
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "OBJECT",

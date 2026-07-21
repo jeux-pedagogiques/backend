@@ -97,7 +97,7 @@ def end_session(
     active_participants = session.exec(
         select(LiveSessionParticipant).where(
             LiveSessionParticipant.room_id == room_id,
-            LiveSessionParticipant.left_at == None
+            LiveSessionParticipant.left_at is None
         )
     ).all()
     for p in active_participants:
@@ -221,7 +221,7 @@ def lock_session(
 ):
     """Lock or unlock a live session room."""
     db_session = session.exec(
-        select(LiveSession).where(LiveSession.room_id == room_id, LiveSession.is_active == True)
+        select(LiveSession).where(LiveSession.room_id == room_id, LiveSession.is_active)
     ).first()
     
     if not db_session:
@@ -256,7 +256,7 @@ async def websocket_endpoint(
     with Session(engine) as db:
         # 1. Validate if session is active
         db_session = db.exec(
-            select(LiveSession).where(LiveSession.room_id == room_id, LiveSession.is_active == True)
+            select(LiveSession).where(LiveSession.room_id == room_id, LiveSession.is_active)
         ).first()
         
         if not db_session:
@@ -406,7 +406,7 @@ async def websocket_endpoint(
             statement = select(LiveSessionParticipant).where(
                 LiveSessionParticipant.room_id == room_id,
                 LiveSessionParticipant.username == name,
-                LiveSessionParticipant.left_at == None
+                LiveSessionParticipant.left_at is None
             )
             p = db.exec(statement).first()
             if p:
@@ -427,7 +427,7 @@ async def websocket_endpoint(
             statement = select(LiveSessionParticipant).where(
                 LiveSessionParticipant.room_id == room_id,
                 LiveSessionParticipant.username == name,
-                LiveSessionParticipant.left_at == None
+                LiveSessionParticipant.left_at is None
             )
             p = db.exec(statement).first()
             if p:

@@ -1,7 +1,6 @@
 """Router for Pitching Challenge CRUD."""
 
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -52,6 +51,21 @@ class SubmitFeedbackRequest(BaseModel):
     team_id: int | None = None
 
 
+# --- Schemas ---
+
+class ConfirmPitchingRequest(BaseModel):
+    module_id: int
+    titre_challenge: str
+    sujet_principal: str
+    sujets_par_equipe: list[str] | None = None
+    aa_cibles: list[str] = []
+    criteres_vote: list[dict] = []
+    grille_feedback: dict = {}
+    questions_debriefing: list[str] = []
+    fiche_animateur: str = ""
+    fiche_participant: str = ""
+
+
 # --- Endpoints ---
 
 @router.post("/generate")
@@ -90,6 +104,61 @@ async def generate_challenge(
     }
 
 
+@router.post("/confirm")
+async def confirm_challenge(
+    data: ConfirmPitchingRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Confirm and persist a pitching challenge into the database and library catalogue."""
+    import json
+    from app.services.library_service import register_library_item
+
+    module = session.get(ModuleAnalysis, data.module_id)
+    if not module or module.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Module introuvable")
+
+    payload = data.model_dump()
+
+    # Save pitching session to DB
+    pitching_session = PitchingSession(
+        prof_id=current_user.id,
+        module_id=module.id,
+        titre=data.titre_challenge,
+        description=json.dumps(payload, ensure_ascii=False),
+        statut="en_attente",
+        mode="individuel",
+    )
+    session.add(pitching_session)
+    session.flush()
+
+    # Register in unified library
+    niveaux = list({
+        lo.get("bloom_level", "")
+        for lo in (module.learning_outcomes or [])
+        if lo.get("bloom_level")
+    })
+    register_library_item(
+        session,
+        user_id=current_user.id,
+        game_type="pitching",
+        game_id=pitching_session.id,
+        module_id=module.id,
+        titre=pitching_session.titre,
+        niveaux_bloom=niveaux,
+        concepts_cles=module.key_concepts or [],
+    )
+
+    session.commit()
+    session.refresh(pitching_session)
+
+    return {
+        "status": "ok",
+        "session_id": pitching_session.id,
+        "message": "Pitching challenge confirmé et enregistré avec succès."
+    }
+
+
 @router.post("/sessions")
 def create_session(
     data: CreatePitchingSessionRequest,
@@ -105,6 +174,32 @@ def create_session(
         statut="en_attente",
     )
     session.add(ps)
+    session.flush()
+
+    # Register in the unified library catalogue
+    from app.services.library_service import register_library_item
+    concepts = []
+    niveaux = []
+    if data.module_id:
+        module = session.get(ModuleAnalysis, data.module_id)
+        if module:
+            concepts = module.key_concepts or []
+            niveaux = list({
+                lo.get("bloom_level", "")
+                for lo in (module.learning_outcomes or [])
+                if lo.get("bloom_level")
+            })
+    register_library_item(
+        session,
+        user_id=current_user.id,
+        game_type="pitching",
+        game_id=ps.id,
+        module_id=data.module_id,
+        titre=ps.titre,
+        niveaux_bloom=niveaux,
+        concepts_cles=concepts,
+    )
+
     session.commit()
     session.refresh(ps)
     return {"id": ps.id, "titre": ps.titre, "statut": ps.statut}

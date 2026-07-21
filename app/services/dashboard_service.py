@@ -1,14 +1,10 @@
 """Dashboard service — SQL aggregation queries for professor analytics."""
 
-import json
 import logging
-from datetime import datetime
 from typing import Any
 
 from sqlmodel import Session, select, func, col
-from sqlalchemy import text
 
-from app.models.user import User
 from app.models.module_analysis import ModuleAnalysis
 from app.models.quiz_session import QuizSession, QuizParticipant, QuizAttempt
 from app.models.escape_room import EscapeRoom
@@ -67,7 +63,7 @@ def get_overview(session: Session, prof_id: int) -> dict[str, Any]:
         participant_count = session.exec(
             select(func.count()).where(
                 QuizParticipant.session_id == qs.id,
-                QuizParticipant.is_active == True,
+                QuizParticipant.is_active,
             )
         ).one()
         participation_data.append({

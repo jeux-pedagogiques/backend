@@ -1,6 +1,5 @@
 """Router for escape room generation and management."""
 
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 
@@ -98,6 +97,26 @@ async def generate_escape_room(
     )
 
     session.add(escape_room)
+    session.flush()
+
+    # Register in the unified library catalogue
+    from app.services.library_service import register_library_item
+    niveaux = list({
+        lo.get("bloom_level", "")
+        for lo in learning_outcomes
+        if lo.get("bloom_level")
+    })
+    register_library_item(
+        session,
+        user_id=current_user.id,
+        game_type="escape_room",
+        game_id=escape_room.id,
+        module_id=data.analysis_id,
+        titre=escape_room.titre_escape_room,
+        niveaux_bloom=niveaux,
+        concepts_cles=key_concepts,
+    )
+
     session.commit()
     session.refresh(escape_room)
 

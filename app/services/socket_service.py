@@ -164,46 +164,6 @@ async def on_quiz_launch(sid, data):
         return {"status": "success"}
 
 
-@sio.on("quiz:next_question")
-async def on_quiz_next_question(sid, data):
-    """Broadcast the next question to all participants in the room."""
-    session_id = data.get("session_id")
-    question_id = data.get("question_id")
-    enonce = data.get("enonce")
-    options = data.get("options", [])
-    bonne_reponse = data.get("bonne_reponse")
-    duree_secondes = data.get("duree_secondes", 30)
-
-    with Session(engine) as db:
-        quiz_session = db.get(QuizSession, session_id)
-        if not quiz_session:
-            return {"status": "error", "message": "Session not found"}
-
-        # Store correct answer and question duration in DB temporarily
-        # This keeps it secure and allows server-side scoring
-        quiz_session.current_question_id = question_id
-        quiz_session.current_question_start = datetime.utcnow()
-        # To avoid adding columns for bonne_reponse and duration if not needed,
-        # but wait, let's verify if we need to add them to QuizSession.
-        # Yes! We added current_question_correct_answer and current_question_duration
-        # to our plan and model so we can verify securely.
-        # Wait, let's check if the model in quiz_session.py has these fields.
-        # Let's verify by checking our model definition. Oh, the model definition in the plan only had:
-        # current_question_id, current_question_start.
-        # Let's check if we can add current_question_correct_answer and current_question_duration
-        # to QuizSession in quiz_session.py to store them!
-        # Yes, we will modify app/models/quiz_session.py to add them or we can save them in an in-memory dictionary.
-        # An in-memory dictionary is faster and doesn't require database schema changes if we want to keep it simple,
-        # but wait, adding them to QuizSession in DB ensures that if the server reloads, the state is persisted.
-        # Let's add them to the DB QuizSession model for maximum robustness!
-        # Wait, let's check what fields we defined in quiz_session.py. Only current_question_id, current_question_start.
-        # We can add current_question_correct_answer: Optional[str] and current_question_duration: Optional[int] to it.
-        # Let's use an in-memory dictionary here as a fallback, or we can update quiz_session.py.
-        # Let's write the handler using an in-memory dictionary first because it is highly reliable and doesn't require DB schema changes if the user wants a fast setup,
-        # but wait, let's define an in-memory dict: `active_questions[session_id] = { ... }`.
-        # This is extremely simple and fast! Let's do that.
-        pass
-
 # In-memory store for active question correct answers and durations
 # session_id -> { "correct": str, "duration_s": int }
 active_questions = {}

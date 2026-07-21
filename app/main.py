@@ -12,14 +12,10 @@ from app.routers.escape_room_router import router as escape_room_router
 from app.routers.dashboard_router import router as dashboard_router
 from app.routers.pitching_router import router as pitching_router
 from app.routers.flashcard_router import router as flashcard_router
+from app.routers.library_router import router as library_router
+from app.services.socket_service import socket_app
 
 # Import models to ensure they are registered in metadata
-from app.models.quiz_session import QuizSession, QuizParticipant, QuizAttempt
-from app.models.escape_room import EscapeRoom
-from app.models.pitching import PitchingSession, PitchingTeam, PitchingVote, PitchingFeedback
-from app.models.flashcard import FlashcardSet, Flashcard, FlashcardReview
-
-
 
 
 @asynccontextmanager
@@ -46,9 +42,9 @@ app.include_router(escape_room_router)
 app.include_router(dashboard_router)
 app.include_router(pitching_router)
 app.include_router(flashcard_router)
+app.include_router(library_router)
 
 # Mount Socket.io ASGI application
-from app.services.socket_service import socket_app
 app.mount("/", socket_app)
 
 
