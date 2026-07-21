@@ -1,0 +1,226 @@
+"""Router for escape room generation and management."""
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import Session, select
+
+from app.database import get_session
+from app.services.auth_service import get_current_user
+from app.models.user import User
+from app.models.escape_room import EscapeRoom
+from app.models.module_analysis import ModuleAnalysis
+from app.schemas.escape_room import (
+    GenerateEscapeRoomRequest,
+    EscapeRoomResponse,
+)
+
+
+router = APIRouter(prefix="/api/escape-rooms", tags=["escape-rooms"])
+
+
+@router.post("/generate", response_model=EscapeRoomResponse)
+async def generate_escape_room(
+    data: GenerateEscapeRoomRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Generate an escape room from a module analysis using Gemini AI."""
+    from app.services.escape_room_service import generate_escape_room as generate_escape_room_ai
+
+    # Fetch the module analysis if provided
+    learning_outcomes = []
+    key_concepts = []
+    keywords = []
+    module_title = None
+
+    if data.analysis_id:
+        entry = session.get(ModuleAnalysis, data.analysis_id)
+        if not entry:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Fiche module introuvable.",
+            )
+        if entry.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Non autorisé à accéder à cette fiche module.",
+            )
+        learning_outcomes = entry.learning_outcomes
+        key_concepts = entry.key_concepts
+        keywords = entry.keywords
+        module_title = entry.module_title
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Veuillez sélectionner une fiche module analysée pour générer l'escape room.",
+        )
+
+    if not learning_outcomes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La fiche module ne contient pas d'acquis d'apprentissage.",
+        )
+
+    try:
+        escape_room_data = await generate_escape_room_ai(
+            learning_outcomes=learning_outcomes,
+            key_concepts=key_concepts,
+            keywords=keywords,
+            nb_enigmes=data.nb_enigmes,
+            difficulte=data.difficulte,
+            mode=data.mode,
+            duree_totale=data.duree_totale,
+            nb_equipes=data.nb_equipes,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Erreur lors de la génération de l'escape room par l'IA : {str(e)}",
+        )
+
+    # Save to database
+    escape_room = EscapeRoom(
+        user_id=current_user.id,
+        analysis_id=data.analysis_id,
+        titre_escape_room=escape_room_data.get("titre_escape_room", "Escape Room"),
+        scenario_intro=escape_room_data.get("scenario_intro", ""),
+        duree_estimee_minutes=escape_room_data.get("duree_estimee_minutes", data.duree_totale),
+        nb_enigmes=data.nb_enigmes,
+        difficulte=data.difficulte,
+        mode=data.mode,
+        module_title=module_title,
+        escape_room_data=escape_room_data,
+    )
+
+    session.add(escape_room)
+    session.flush()
+
+    # Register in the unified library catalogue
+    from app.services.library_service import register_library_item
+    niveaux = list({
+        lo.get("bloom_level", "")
+        for lo in learning_outcomes
+        if lo.get("bloom_level")
+    })
+    register_library_item(
+        session,
+        user_id=current_user.id,
+        game_type="escape_room",
+        game_id=escape_room.id,
+        module_id=data.analysis_id,
+        titre=escape_room.titre_escape_room,
+        niveaux_bloom=niveaux,
+        concepts_cles=key_concepts,
+    )
+
+    session.commit()
+    session.refresh(escape_room)
+
+    return EscapeRoomResponse(
+        id=escape_room.id,
+        user_id=escape_room.user_id,
+        analysis_id=escape_room.analysis_id,
+        titre_escape_room=escape_room.titre_escape_room,
+        scenario_intro=escape_room.scenario_intro,
+        duree_estimee_minutes=escape_room.duree_estimee_minutes,
+        nb_enigmes=escape_room.nb_enigmes,
+        difficulte=escape_room.difficulte,
+        mode=escape_room.mode,
+        module_title=escape_room.module_title,
+        escape_room_data=escape_room.escape_room_data,
+        created_at=escape_room.created_at,
+    )
+
+
+@router.get("/history", response_model=list[EscapeRoomResponse])
+async def list_escape_rooms(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Get all escape rooms generated by the current user."""
+    statement = (
+        select(EscapeRoom)
+        .where(EscapeRoom.user_id == current_user.id)
+        .order_by(EscapeRoom.created_at.desc())
+    )
+    results = session.exec(statement).all()
+
+    return [
+        EscapeRoomResponse(
+            id=er.id,
+            user_id=er.user_id,
+            analysis_id=er.analysis_id,
+            titre_escape_room=er.titre_escape_room,
+            scenario_intro=er.scenario_intro,
+            duree_estimee_minutes=er.duree_estimee_minutes,
+            nb_enigmes=er.nb_enigmes,
+            difficulte=er.difficulte,
+            mode=er.mode,
+            module_title=er.module_title,
+            escape_room_data=er.escape_room_data,
+            created_at=er.created_at,
+        )
+        for er in results
+    ]
+
+
+@router.get("/{escape_room_id}", response_model=EscapeRoomResponse)
+async def get_escape_room(
+    escape_room_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Get a specific escape room by ID."""
+    er = session.get(EscapeRoom, escape_room_id)
+    if not er:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Escape room introuvable.",
+        )
+    if er.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non autorisé à accéder à cet escape room.",
+        )
+
+    return EscapeRoomResponse(
+        id=er.id,
+        user_id=er.user_id,
+        analysis_id=er.analysis_id,
+        titre_escape_room=er.titre_escape_room,
+        scenario_intro=er.scenario_intro,
+        duree_estimee_minutes=er.duree_estimee_minutes,
+        nb_enigmes=er.nb_enigmes,
+        difficulte=er.difficulte,
+        mode=er.mode,
+        module_title=er.module_title,
+        escape_room_data=er.escape_room_data,
+        created_at=er.created_at,
+    )
+
+
+@router.delete("/{escape_room_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_escape_room(
+    escape_room_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Delete an escape room."""
+    er = session.get(EscapeRoom, escape_room_id)
+    if not er:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Escape room introuvable.",
+        )
+    if er.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non autorisé à supprimer cet escape room.",
+        )
+
+    session.delete(er)
+    session.commit()

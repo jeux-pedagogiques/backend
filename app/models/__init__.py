@@ -1,0 +1,12 @@
+# Import all models here so they are registered with SQLModel.metadata.
+from app.models.user import User  # noqa: F401
+from app.models.module_analysis import ModuleAnalysis  # noqa: F401
+from app.models.live_session import LiveSession, LiveSessionParticipant, ScheduledMeeting  # noqa: F401
+from app.models.escape_room import EscapeRoom  # noqa: F401
+from app.models.pitching import PitchingSession, PitchingTeam, PitchingVote, PitchingFeedback  # noqa: F401
+from app.models.flashcard import FlashcardSet, Flashcard, FlashcardReview  # noqa: F401
+from app.models.quiz import Quiz  # noqa: F401
+from app.models.library_item import LibraryItem  # noqa: F401
+
+
+
