@@ -10,7 +10,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./test.db"
 
-engine = create_engine(DATABASE_URL, echo=True)
+if DATABASE_URL.startswith("postgresql://") and "neon.tech" in DATABASE_URL:
+    engine = create_engine(DATABASE_URL, echo=True, connect_args={"sslmode": "require"})
+else:
+    engine = create_engine(DATABASE_URL, echo=True)
 
 
 def create_db_and_tables():
