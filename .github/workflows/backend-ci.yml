@@ -31,6 +31,10 @@ jobs:
         run: ruff check app/ tests/
 
       - name: Run Backend Unit Tests (Pytest)
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+          SECRET_KEY: "ci_test_secret_key_12345"
+          GEMINI_API_KEY: "dummy_ci_key"
         run: pytest tests -v
 
       - name: SAST Scan — Bandit (Python Security Patterns)

@@ -5,6 +5,8 @@ import socketio
 from sqlmodel import Session, select
 from app.database import engine
 from app.models.quiz_session import QuizSession, QuizParticipant, QuizAttempt
+from app.models.cas_etude import CasEtude, EquipeCasEtude, RoleAssignment, DecisionEquipe
+from app.models.mindmap import MindMap, MindMapNode
 
 logger = logging.getLogger(__name__)
 
@@ -404,3 +406,401 @@ async def on_quiz_submit_answer(sid, data):
         }, room=room)
 
         return {"status": "success", "points_obtenus": points_obtenus}
+
+
+# ==========================================
+# CAS D'ÉTUDE GAMIFIÉE EVENTS
+# ==========================================
+
+@sio.on("cas:launch")
+async def on_cas_launch(sid, data):
+    """
+    Professor launches a Case Study session.
+    Distributes scenario to room and sends ASSYMETRIC ROLE INFO exclusively to each participant sid.
+    """
+    session_id = data.get("session_id")
+    session_code = data.get("session_code")
+    cas_etude_id = data.get("cas_etude_id")
+    equipes_data = data.get("equipes", [])  # list of {"nom_equipe": "...", "participants": [{"id": "sid_or_uid", "pseudo": "..."}]}
+
+    if not cas_etude_id or not session_code:
+        return {"status": "error", "message": "Missing cas_etude_id or session_code"}
+
+    with Session(engine) as db:
+        cas = db.get(CasEtude, cas_etude_id)
+        if not cas:
+            return {"status": "error", "message": "Cas d'étude not found"}
+
+        roles_list = cas.roles or []
+        created_equipes = []
+
+        for eq_data in equipes_data:
+            nom_equipe = eq_data.get("nom_equipe", "Équipe")
+            participants = eq_data.get("participants", [])
+
+            equipe = EquipeCasEtude(
+                session_id=session_id or 0,
+                cas_etude_id=cas.id,
+                nom_equipe=nom_equipe,
+                statut="en_analyse"
+            )
+            db.add(equipe)
+            db.commit()
+            db.refresh(equipe)
+
+            # Assign roles round-robin to participants in team
+            assigned_roles = []
+            for idx, part in enumerate(participants):
+                part_id = str(part.get("id") or part.get("socket_id") or f"part_{idx}")
+                part_pseudo = part.get("pseudo", f"Participant {idx + 1}")
+                
+                # Pick role
+                role_obj = roles_list[idx % len(roles_list)] if roles_list else {"nom_role": "Analyste"}
+                role_name = role_obj.get("nom_role", "Analyste")
+
+                assignment = RoleAssignment(
+                    equipe_cas_etude_id=equipe.id,
+                    participant_id=part_id,
+                    nom_role=role_name,
+                    participant_pseudo=part_pseudo
+                )
+                db.add(assignment)
+                db.commit()
+
+                # CRITICAL SECURITY REQUIREMENT:
+                # Send private role info DIRECTLY to this participant's socket ID only (NO BROADCAST)
+                target_sid = part.get("socket_id") or part_id
+                role_private_payload = {
+                    "equipe_id": equipe.id,
+                    "nom_equipe": equipe.nom_equipe,
+                    "nom_role": role_name,
+                    "objectifs": role_obj.get("objectifs", ""),
+                    "infos_privees": role_obj.get("infos_privees", ""),
+                    "contraintes_secretes": role_obj.get("contraintes_secretes", "")
+                }
+                try:
+                    await sio.emit("cas:your_role_info", role_private_payload, to=target_sid)
+                except Exception as e:
+                    logger.warning(f"Could not send role info directly to sid {target_sid}: {e}")
+
+                assigned_roles.append({
+                    "participant_id": part_id,
+                    "participant_pseudo": part_pseudo,
+                    "nom_role": role_name
+                })
+
+            created_equipes.append({
+                "equipe_id": equipe.id,
+                "nom_equipe": equipe.nom_equipe,
+                "statut": equipe.statut,
+                "members_count": len(participants)
+            })
+
+        # Broadcast general scenario context to room (WITHOUT role private data)
+        room = f"session_{session_code}"
+        await sio.emit("cas:scenario_started", {
+            "cas_etude_id": cas.id,
+            "titre": cas.titre,
+            "contexte_scenario": cas.contexte_scenario,
+            "questions_decisions": cas.questions_decisions,
+            "format_restitution": cas.format_restitution,
+            "equipes": created_equipes
+        }, room=room)
+
+        return {"status": "success", "equipes": created_equipes}
+
+
+@sio.on("cas:start_restitution")
+async def on_cas_start_restitution(sid, data):
+    """Professor transitions a team or all teams to restitution phase."""
+    equipe_id = data.get("equipe_id")
+    session_code = data.get("session_code")
+
+    with Session(engine) as db:
+        if equipe_id:
+            eq = db.get(EquipeCasEtude, equipe_id)
+            if eq:
+                eq.statut = "restitution_faite"
+                db.add(eq)
+                db.commit()
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "equipe_id": equipe_id,
+            "statut": "restitution_faite"
+        }
+        if room:
+            await sio.emit("cas:phase_restitution", payload, room=room)
+        else:
+            await sio.emit("cas:phase_restitution", payload)
+
+        return {"status": "success"}
+
+
+@sio.on("cas:submit_decision")
+async def on_cas_submit_decision(sid, data):
+    """Student team submits a decision for a question."""
+    equipe_id = data.get("equipe_id")
+    question_id = str(data.get("question_id", ""))
+    decision_texte = data.get("decision_texte", "")
+    justification_texte = data.get("justification_texte", "")
+    session_code = data.get("session_code")
+
+    if not equipe_id or not question_id:
+        return {"status": "error", "message": "Missing equipe_id or question_id"}
+
+    with Session(engine) as db:
+        decision = DecisionEquipe(
+            equipe_cas_etude_id=equipe_id,
+            question_id=question_id,
+            decision_texte=decision_texte,
+            justification_texte=justification_texte
+        )
+        db.add(decision)
+        db.commit()
+        db.refresh(decision)
+
+        # Notify submitting student/team
+        await sio.emit("cas:decision_saved", {
+            "id": decision.id,
+            "equipe_id": equipe_id,
+            "question_id": question_id,
+            "status": "saved"
+        }, to=sid)
+
+        # Notify professor/room of decision progress
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("cas:team_decision_updated", {
+                "equipe_id": equipe_id,
+                "question_id": question_id,
+                "decision_texte": decision_texte,
+                "justification_texte": justification_texte
+            }, room=room)
+
+        return {"status": "success", "decision_id": decision.id}
+
+
+@sio.on("cas:view_role_info")
+async def on_cas_view_role_info(sid, data):
+    """
+    Student requests their role private info.
+    Server fetches role assignment and returns ONLY that participant's private info to their sid.
+    """
+    participant_id = str(data.get("participant_id") or sid)
+
+    with Session(engine) as db:
+        assignment = db.exec(
+            select(RoleAssignment).where(RoleAssignment.participant_id == participant_id)
+        ).first()
+
+        if not assignment:
+            # Fallback check by socket sid
+            assignment = db.exec(
+                select(RoleAssignment).where(RoleAssignment.participant_id == sid)
+            ).first()
+
+        if not assignment:
+            await sio.emit("cas:role_info", {"error": "Aucun rôle attribué trouvé."}, to=sid)
+            return {"status": "error", "message": "Role assignment not found"}
+
+        equipe = db.get(EquipeCasEtude, assignment.equipe_cas_etude_id)
+        if not equipe:
+            await sio.emit("cas:role_info", {"error": "Équipe non trouvée."}, to=sid)
+            return {"status": "error", "message": "Team not found"}
+
+        cas = db.get(CasEtude, equipe.cas_etude_id)
+        if not cas:
+            await sio.emit("cas:role_info", {"error": "Cas d'étude non trouvé."}, to=sid)
+            return {"status": "error", "message": "Case study not found"}
+
+        roles_list = cas.roles or []
+        target_role = None
+        for r in roles_list:
+            if r.get("nom_role") == assignment.nom_role:
+                target_role = r
+                break
+
+        if not target_role and roles_list:
+            target_role = roles_list[0]
+
+        role_payload = {
+            "equipe_id": equipe.id,
+            "nom_equipe": equipe.nom_equipe,
+            "nom_role": assignment.nom_role,
+            "objectifs": target_role.get("objectifs", "") if target_role else "",
+            "infos_privees": target_role.get("infos_privees", "") if target_role else "",
+            "contraintes_secretes": target_role.get("contraintes_secretes", "") if target_role else ""
+        }
+
+        # Send ONLY to requesting student's sid
+        await sio.emit("cas:role_info", role_payload, to=sid)
+        return {"status": "success", "role_info": role_payload}
+
+
+# ==========================================
+# MIND MAP COLLABORATIF EVENTS
+# ==========================================
+
+@sio.on("mindmap:launch")
+async def on_mindmap_launch(sid, data):
+    """
+    Professor launches a Mind Map session.
+    Broadcasts concept_central and branches_suggerees to session room.
+    """
+    session_code = data.get("session_code")
+    mindmap_id = data.get("mindmap_id")
+
+    if not mindmap_id or not session_code:
+        return {"status": "error", "message": "Missing mindmap_id or session_code"}
+
+    with Session(engine) as db:
+        mindmap = db.get(MindMap, mindmap_id)
+        if not mindmap:
+            return {"status": "error", "message": "Mind Map not found"}
+
+        # Fetch existing nodes if any
+        nodes = db.exec(select(MindMapNode).where(MindMapNode.mindmap_id == mindmap.id)).all()
+        nodes_data = [
+            {
+                "id": n.id,
+                "parent_node_id": n.parent_node_id,
+                "titre": n.titre,
+                "equipe_id": n.equipe_id,
+                "cree_par_participant_id": n.cree_par_participant_id,
+                "ordre": n.ordre
+            }
+            for n in nodes
+        ]
+
+        payload = {
+            "mindmap_id": mindmap.id,
+            "concept_central": mindmap.concept_central,
+            "branches_suggerees": mindmap.branches_suggerees,
+            "nodes": nodes_data
+        }
+
+        room = f"session_{session_code}"
+        await sio.emit("mindmap:started", payload, room=room)
+        return {"status": "success", "mindmap": payload}
+
+
+@sio.on("mindmap:add_node")
+async def on_mindmap_add_node(sid, data):
+    """
+    Student or team adds a new node to the Mind Map.
+    Saves in DB and broadcasts 'mindmap:node_added' in real time to the team/room.
+    """
+    mindmap_id = data.get("mindmap_id")
+    equipe_id = data.get("equipe_id", 0)
+    parent_node_id = data.get("parent_node_id")  # Can be None for top-level branch
+    titre = data.get("titre")
+    participant_id = str(data.get("participant_id") or sid)
+    session_code = data.get("session_code")
+
+    if not mindmap_id or not titre:
+        return {"status": "error", "message": "Missing mindmap_id or titre"}
+
+    with Session(engine) as db:
+        node = MindMapNode(
+            mindmap_id=mindmap_id,
+            equipe_id=equipe_id,
+            parent_node_id=parent_node_id,
+            titre=titre,
+            cree_par_participant_id=participant_id
+        )
+        db.add(node)
+        db.commit()
+        db.refresh(node)
+
+        payload = {
+            "id": node.id,
+            "mindmap_id": node.mindmap_id,
+            "equipe_id": node.equipe_id,
+            "parent_node_id": node.parent_node_id,
+            "titre": node.titre,
+            "cree_par_participant_id": node.cree_par_participant_id,
+            "created_at": node.created_at.isoformat() if node.created_at else None
+        }
+
+        room = f"session_{session_code}" if session_code else f"team_{equipe_id}"
+        await sio.emit("mindmap:node_added", payload, room=room)
+        return {"status": "success", "node": payload}
+
+
+@sio.on("mindmap:remove_node")
+async def on_mindmap_remove_node(sid, data):
+    """
+    Deletes a node and recursively all its child nodes.
+    Broadcasts 'mindmap:node_removed' to room.
+    """
+    node_id = data.get("node_id")
+    session_code = data.get("session_code")
+    equipe_id = data.get("equipe_id", 0)
+
+    if not node_id:
+        return {"status": "error", "message": "Missing node_id"}
+
+    with Session(engine) as db:
+        def get_all_child_ids(parent_id: int) -> list[int]:
+            children = db.exec(select(MindMapNode).where(MindMapNode.parent_node_id == parent_id)).all()
+            ids = [parent_id]
+            for child in children:
+                ids.extend(get_all_child_ids(child.id))
+            return ids
+
+        target_node = db.get(MindMapNode, node_id)
+        if not target_node:
+            return {"status": "error", "message": "Node not found"}
+
+        ids_to_delete = get_all_child_ids(node_id)
+        for n_id in ids_to_delete:
+            n = db.get(MindMapNode, n_id)
+            if n:
+                db.delete(n)
+        db.commit()
+
+        payload = {
+            "node_id": node_id,
+            "deleted_node_ids": ids_to_delete
+        }
+
+        room = f"session_{session_code}" if session_code else f"team_{equipe_id}"
+        await sio.emit("mindmap:node_removed", payload, room=room)
+        return {"status": "success", "deleted_ids": ids_to_delete}
+
+
+@sio.on("mindmap:move_node")
+async def on_mindmap_move_node(sid, data):
+    """
+    Reorganizes a node by attaching it to a new parent_node_id.
+    Broadcasts 'mindmap:node_moved' in real time to room.
+    """
+    node_id = data.get("node_id")
+    new_parent_node_id = data.get("new_parent_node_id")
+    session_code = data.get("session_code")
+    equipe_id = data.get("equipe_id", 0)
+
+    if not node_id:
+        return {"status": "error", "message": "Missing node_id"}
+
+    with Session(engine) as db:
+        node = db.get(MindMapNode, node_id)
+        if not node:
+            return {"status": "error", "message": "Node not found"}
+
+        node.parent_node_id = new_parent_node_id
+        db.add(node)
+        db.commit()
+        db.refresh(node)
+
+        payload = {
+            "node_id": node.id,
+            "new_parent_node_id": node.parent_node_id
+        }
+
+        room = f"session_{session_code}" if session_code else f"team_{equipe_id}"
+        await sio.emit("mindmap:node_moved", payload, room=room)
+        return {"status": "success", "node": payload}
+
+

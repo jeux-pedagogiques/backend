@@ -7,6 +7,9 @@ from app.models.pitching import PitchingSession, PitchingTeam, PitchingVote, Pit
 from app.models.flashcard import FlashcardSet, Flashcard, FlashcardReview  # noqa: F401
 from app.models.quiz import Quiz  # noqa: F401
 from app.models.library_item import LibraryItem  # noqa: F401
+from app.models.game_share import GameShare, GameResult  # noqa: F401
+from app.models.cas_etude import CasEtude, EquipeCasEtude, RoleAssignment, DecisionEquipe  # noqa: F401
+from app.models.mindmap import MindMap, MindMapNode  # noqa: F401
 
 
 

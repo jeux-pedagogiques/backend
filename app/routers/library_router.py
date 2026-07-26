@@ -46,6 +46,34 @@ async def list_library(
 ):
     """List library items with combined filters, FTS and pagination."""
 
+    # Auto-sync missing CasEtude items into LibraryItem
+    try:
+        from app.models.cas_etude import CasEtude
+        from app.services.library_service import register_library_item
+        all_cases = session.exec(select(CasEtude).where(CasEtude.user_id == current_user.id)).all()
+        for cas in all_cases:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "cas_etude",
+                    LibraryItem.game_id == cas.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="cas_etude",
+                    game_id=cas.id,
+                    module_id=cas.module_id,
+                    titre=cas.titre,
+                    niveaux_bloom=["analyser", "evaluer", "creer"],
+                    concepts_cles=[]
+                )
+        session.commit()
+    except Exception as e:
+        pass
+
     # Base query
     stmt = select(LibraryItem).where(
         LibraryItem.user_id == current_user.id,

@@ -12,6 +12,7 @@ from app.models.escape_room import EscapeRoom
 from app.models.flashcard import FlashcardSet, Flashcard
 from app.models.pitching import PitchingSession
 from app.models.quiz import Quiz
+from app.models.cas_etude import CasEtude
 from app.models.module_analysis import ModuleAnalysis
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ GAME_TYPE_MAP: dict[str, type] = {
     "flashcards": FlashcardSet,
     "pitching": PitchingSession,
     "quiz": Quiz,
+    "cas_etude": CasEtude,
 }
 
 
@@ -77,6 +79,7 @@ def _get_title_field(game_type: str, game) -> str:
         "flashcards": "titre",
         "pitching": "titre",
         "quiz": "titre",
+        "cas_etude": "titre",
     }
     return getattr(game, title_map.get(game_type, "titre"), "Sans titre")
 

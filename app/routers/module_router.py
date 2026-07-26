@@ -304,7 +304,7 @@ async def list_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Get the module analysis history for the current user."""
+    """Get the module analysis history summary for the current user."""
     statement = (
         select(ModuleAnalysis)
         .where(ModuleAnalysis.user_id == current_user.id)
@@ -314,26 +314,56 @@ async def list_analysis_history(
 
     response = []
     for entry in results:
-        # Deserialize JSON lists/dicts to Pydantic models
-        lo_list = [LearningOutcome(**lo) for lo in entry.learning_outcomes]
+        lo_list = [LearningOutcome(**lo) for lo in (entry.learning_outcomes or [])]
         response.append(
             SavedAnalysisResponse(
                 id=entry.id,
                 user_id=entry.user_id,
                 module_title=entry.module_title,
                 module_summary=entry.module_summary,
-                original_content=entry.original_content,
+                original_content=None,  # Omit heavy raw document text in list for performance
                 learning_outcomes=lo_list,
-                key_concepts=entry.key_concepts,
-                keywords=entry.keywords,
-                central_notions=entry.central_notions,
+                key_concepts=entry.key_concepts or [],
+                keywords=entry.keywords or [],
+                central_notions=entry.central_notions or [],
                 estimated_duration=entry.estimated_duration,
                 target_audience=entry.target_audience,
-                quiz_data=entry.quiz_data,
+                quiz_data=None,  # Omit heavy quiz payload in list
                 created_at=entry.created_at,
             )
         )
     return response
+
+
+@router.get("/history/{analysis_id}", response_model=SavedAnalysisResponse)
+async def get_analysis_history_item(
+    analysis_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Get full details of a specific module analysis history item."""
+    entry = session.get(ModuleAnalysis, analysis_id)
+    if not entry or entry.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fiche module introuvable.",
+        )
+    lo_list = [LearningOutcome(**lo) for lo in (entry.learning_outcomes or [])]
+    return SavedAnalysisResponse(
+        id=entry.id,
+        user_id=entry.user_id,
+        module_title=entry.module_title,
+        module_summary=entry.module_summary,
+        original_content=entry.original_content,
+        learning_outcomes=lo_list,
+        key_concepts=entry.key_concepts or [],
+        keywords=entry.keywords or [],
+        central_notions=entry.central_notions or [],
+        estimated_duration=entry.estimated_duration,
+        target_audience=entry.target_audience,
+        quiz_data=entry.quiz_data,
+        created_at=entry.created_at,
+    )
 
 
 @router.delete("/history/{analysis_id}", status_code=status.HTTP_204_NO_CONTENT)
