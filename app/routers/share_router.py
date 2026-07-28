@@ -1,6 +1,6 @@
 """Router for shareable game URLs — create share links, public game access, and student results."""
 
-from typing import Optional, Any
+from typing import Optional, Any, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.services.auth_service import get_current_user
+from app.services.email_service import send_email
 from app.models.user import User
 from app.models.game_share import GameShare, GameResult
 from app.models.quiz import Quiz
@@ -32,6 +33,13 @@ class CreateShareRequest(BaseModel):
 class CreateShareResponse(BaseModel):
     share_token: str
     share_url: str
+
+
+class ShareGameEmailRequest(BaseModel):
+    game_type: str
+    game_id: int
+    recipient_emails: List[str]
+    frontend_url: Optional[str] = None
 
 
 class SubmitResultRequest(BaseModel):
@@ -86,6 +94,196 @@ def create_share(
         share_token=share.share_token,
         share_url=f"/play/{req.game_type}/{share.share_token}",
     )
+
+
+@router.post("/email")
+def share_game_email(
+    req: ShareGameEmailRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Send invitation emails for a shared game via SMTP."""
+    if req.game_type not in VALID_GAME_TYPES:
+        raise HTTPException(400, f"Invalid game_type. Must be one of: {VALID_GAME_TYPES}")
+
+    game = _get_game_or_404(session, req.game_type, req.game_id, current_user.id)
+
+    # Get or create share token
+    existing_share = session.exec(
+        select(GameShare).where(
+            GameShare.game_type == req.game_type,
+            GameShare.game_id == req.game_id,
+            GameShare.user_id == current_user.id,
+            GameShare.is_active == True,
+        )
+    ).first()
+
+    if not existing_share:
+        existing_share = GameShare(
+            game_type=req.game_type,
+            game_id=req.game_id,
+            user_id=current_user.id,
+        )
+        session.add(existing_share)
+        session.commit()
+        session.refresh(existing_share)
+
+    base_url = req.frontend_url.rstrip("/") if req.frontend_url else "http://localhost:4200"
+    join_link = f"{base_url}/play/{req.game_type}/{existing_share.share_token}"
+
+    title = getattr(game, "titre", None) or getattr(game, "title", None) or getattr(game, "name", None) or "Jeu ESPRIT"
+    creator_name = (
+        f"{current_user.first_name} {current_user.last_name}".strip()
+        if current_user.first_name and current_user.last_name
+        else (current_user.username or "Professeur")
+    )
+
+    game_type_labels = {
+        "quiz": "Quiz Interactif",
+        "escape_room": "Escape Room Pédagogique",
+        "flashcards": "Flashcards d'Étude",
+        "pitching": "Challenge Pitching",
+        "cas_etude": "Étude de Cas",
+        "mindmap": "Carte Mentale (Mind Map)"
+    }
+    type_label = game_type_labels.get(req.game_type, "Activité Pédagogique")
+
+    subject = f"Invitation : {type_label} ESPRIT - {title}"
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invitation {type_label} ESPRIT AI</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+    
+    <!-- Top Accent Gradient Line -->
+    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+            <td style="height: 5px; background: #9f0d15; background: linear-gradient(90deg, #7f1d1d 0%, #c51414 50%, #ea580c 100%);"></td>
+        </tr>
+    </table>
+
+    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 25px 15px 40px 15px;">
+        <tr>
+            <td align="center">
+                
+                <!-- Main Wrapper Container -->
+                <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px;">
+                    
+                    <!-- Header Logo -->
+                    <tr>
+                        <td align="left" style="padding: 15px 10px 25px 10px;">
+                            <span style="font-size: 24px; font-weight: 900; color: #0f172a; font-family: 'Segoe UI', Arial, sans-serif; letter-spacing: -0.5px;">
+                                ESPRIT<span style="color: #9f0d15;">.AI</span>
+                            </span>
+                        </td>
+                    </tr>
+
+                    <!-- Main White Card -->
+                    <tr>
+                        <td style="background-color: #ffffff; border-radius: 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05); padding: 36px 30px; border: 1px solid #e2e8f0;">
+                            
+                            <p style="margin: 0 0 18px 0; color: #0f172a; font-size: 16px; font-weight: 600;">Bonjour,</p>
+                            <p style="margin: 0 0 26px 0; color: #334155; font-size: 15px; line-height: 1.6;">
+                                <strong style="color: #0f172a; font-weight: 700;">{creator_name}</strong> vous invite à réaliser une activité pédagogique en ligne sur la plateforme ESPRIT AI.
+                            </p>
+
+                            <!-- 2x2 Grid Info Box -->
+                            <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; margin-bottom: 30px; border-collapse: separate; border-spacing: 0; overflow: hidden;">
+                                <tr>
+                                    <td width="50%" align="center" style="padding: 24px 15px; border-right: 1px solid #e2e8f0; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            TITRE DU JEU
+                                        </div>
+                                        <div style="font-size: 15px; font-weight: 700; color: #0f172a; word-break: break-word;">
+                                            {title}
+                                        </div>
+                                    </td>
+                                    <td width="50%" align="center" style="padding: 24px 15px; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            TYPE D'ACTIVITÉ
+                                        </div>
+                                        <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
+                                            {type_label}
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Call To Action Button -->
+                            <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 28px;">
+                                <tr>
+                                    <td align="center">
+                                        <table role="presentation" border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td align="center" bgcolor="#8C0A10" style="border-radius: 30px; background-color: #8C0A10; box-shadow: 0 6px 18px rgba(140, 10, 16, 0.3);">
+                                                    <a href="{join_link}" target="_blank" style="font-size: 16px; font-weight: 800; color: #ffffff !important; text-decoration: none; padding: 16px 38px; border-radius: 30px; display: inline-block; background-color: #8C0A10; border: 1px solid #8C0A10; letter-spacing: 0.3px;">
+                                                        Commencer le Jeu
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Direct Link Fallback -->
+                            <div style="background-color: #f1f5f9; padding: 14px 18px; border-radius: 12px; text-align: center; font-size: 12px; color: #64748b; line-height: 1.5;">
+                                Si le bouton ne s'affiche pas correctement, copiez ce lien :<br>
+                                <a href="{join_link}" target="_blank" style="color: #0f172a !important; font-weight: 700; text-decoration: underline; word-break: break-all; margin-top: 4px; display: inline-block;">
+                                    {join_link}
+                                </a>
+                            </div>
+
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td align="center" style="padding: 25px 20px 10px 20px; text-align: center; font-size: 12px; color: #94a3b8;">
+                            © ESPRIT AI Platform • Partage automatique de jeu pédagogique
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
+    text_content = f"Bonjour,\n\n{creator_name} vous invite à réaliser '{title}' ({type_label}).\nLien direct : {join_link}\n\nCordialement."
+
+    targets = list(dict.fromkeys([e.strip() for e in req.recipient_emails if e and e.strip()]))
+    if not targets:
+        raise HTTPException(400, "Veuillez fournir au moins une adresse email valide.")
+
+    sent_count = 0
+    failed_emails = []
+
+    for email in targets:
+        ok = send_email(
+            to_email=email,
+            subject=subject,
+            body_html=html_content,
+            body_text=text_content
+        )
+        if ok:
+            sent_count += 1
+        else:
+            failed_emails.append(email)
+
+    if sent_count == 0:
+        raise HTTPException(500, "Échec de l'envoi des emails via le serveur SMTP.")
+
+    msg = f"Invitation au jeu envoyée avec succès par email à {sent_count} destinataire(s)."
+    if failed_emails:
+        msg += f" (Échec pour : {', '.join(failed_emails)})"
+
+    return {"status": "success", "message": msg, "sent_count": sent_count, "failed_count": len(failed_emails)}
 
 
 @router.get("/results/{game_type}/{game_id}")

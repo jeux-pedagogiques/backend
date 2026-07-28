@@ -226,6 +226,7 @@ async def analyze_module(
 
 class SaveAnalysisRequest(BaseModel):
     """Request body to save an analysis result to history."""
+    analysis_id: int | None = None
     module_title: str
     original_content: str | None = None
     learning_outcomes: list[LearningOutcome]
@@ -261,24 +262,58 @@ async def save_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Save a validated module analysis result to the user's history."""
+    """Save or update a validated module analysis result in the user's history."""
     # Convert learning outcomes from Pydantic models to dicts for JSON column storage
     outcomes_dict = [lo.model_dump() for lo in data.learning_outcomes]
 
-    history_entry = ModuleAnalysis(
-        user_id=current_user.id,
-        module_title=data.module_title,
-        module_summary=data.module_summary,
-        original_content=data.original_content,
-        learning_outcomes=outcomes_dict,
-        key_concepts=data.key_concepts,
-        keywords=data.keywords,
-        central_notions=data.central_notions,
-        estimated_duration=data.estimated_duration,
-        target_audience=data.target_audience,
-    )
+    history_entry = None
+    if data.analysis_id:
+        history_entry = session.get(ModuleAnalysis, data.analysis_id)
+        if history_entry and history_entry.user_id != current_user.id:
+            history_entry = None
 
-    session.add(history_entry)
+    # Fallback: check if an entry with the exact same title exists for this user
+    if not history_entry:
+        statement = (
+            select(ModuleAnalysis)
+            .where(
+                ModuleAnalysis.user_id == current_user.id,
+                ModuleAnalysis.module_title == data.module_title,
+            )
+            .order_by(ModuleAnalysis.created_at.desc())
+        )
+        existing = session.exec(statement).first()
+        if existing:
+            history_entry = existing
+
+    if history_entry:
+        # Update existing entry
+        history_entry.module_title = data.module_title
+        history_entry.module_summary = data.module_summary
+        if data.original_content:
+            history_entry.original_content = data.original_content
+        history_entry.learning_outcomes = outcomes_dict
+        history_entry.key_concepts = data.key_concepts
+        history_entry.keywords = data.keywords
+        history_entry.central_notions = data.central_notions
+        history_entry.estimated_duration = data.estimated_duration
+        history_entry.target_audience = data.target_audience
+    else:
+        # Create new entry
+        history_entry = ModuleAnalysis(
+            user_id=current_user.id,
+            module_title=data.module_title,
+            module_summary=data.module_summary,
+            original_content=data.original_content,
+            learning_outcomes=outcomes_dict,
+            key_concepts=data.key_concepts,
+            keywords=data.keywords,
+            central_notions=data.central_notions,
+            estimated_duration=data.estimated_duration,
+            target_audience=data.target_audience,
+        )
+        session.add(history_entry)
+
     session.commit()
     session.refresh(history_entry)
 
@@ -304,7 +339,7 @@ async def list_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Get the module analysis history summary for the current user."""
+    """Get the module analysis history summary for the current user (deduplicated by title, latest first)."""
     statement = (
         select(ModuleAnalysis)
         .where(ModuleAnalysis.user_id == current_user.id)
@@ -312,8 +347,14 @@ async def list_analysis_history(
     )
     results = session.exec(statement).all()
 
+    seen_titles = set()
     response = []
     for entry in results:
+        normalized_title = (entry.module_title or "").strip().lower()
+        if normalized_title in seen_titles:
+            continue
+        seen_titles.add(normalized_title)
+
         lo_list = [LearningOutcome(**lo) for lo in (entry.learning_outcomes or [])]
         response.append(
             SavedAnalysisResponse(

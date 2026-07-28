@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.database import get_session, engine
 from app.services.auth_service import get_current_user
+from app.services.email_service import send_email
 from app.models.user import User
 from app.models.live_session import LiveSession, LiveSessionParticipant, ScheduledMeeting
 
@@ -26,6 +27,12 @@ active_rooms: Dict[str, List[Dict[str, any]]] = {}
 class CreateSessionRequest(BaseModel):
     room_id: str
     name: str
+
+
+class ShareMeetingEmailRequest(BaseModel):
+    recipient_email: Optional[str] = None
+    recipient_emails: Optional[List[str]] = None
+    frontend_url: Optional[str] = None
 
 
 @router.post("/session", status_code=201)
@@ -206,6 +213,206 @@ def delete_scheduled_meeting(
     session.delete(meeting)
     session.commit()
     return {"status": "deleted"}
+
+
+@router.post("/schedule/{meeting_id}/share-email")
+def share_scheduled_meeting_email(
+    meeting_id: int,
+    data: ShareMeetingEmailRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Send an invitation email for a scheduled meeting via SMTP."""
+    meeting = session.get(ScheduledMeeting, meeting_id)
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Séance planifiée non trouvée."
+        )
+
+    creator = session.get(User, meeting.creator_id)
+    creator_name = (
+        f"{creator.first_name} {creator.last_name}".strip()
+        if creator and creator.first_name and creator.last_name
+        else (creator.username if creator else "Professeur")
+    )
+
+    base_url = data.frontend_url.rstrip("/") if data.frontend_url else "http://localhost:4200"
+    join_link = f"{base_url}/live-session?room={meeting.room_id}"
+    formatted_date = meeting.scheduled_time.strftime("%d/%m/%Y à %H:%M")
+
+    subject = f"Invitation : Séance en direct ESPRIT - {meeting.title}"
+    
+    html_content = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invitation Séance en Direct ESPRIT AI</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+    
+    <!-- Top Accent Gradient Line -->
+    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+            <td style="height: 5px; background: #9f0d15; background: linear-gradient(90deg, #7f1d1d 0%, #c51414 50%, #ea580c 100%);"></td>
+        </tr>
+    </table>
+
+    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 25px 15px 40px 15px;">
+        <tr>
+            <td align="center">
+                
+                <!-- Main Wrapper Container -->
+                <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px;">
+                    
+                    <!-- Header Logo -->
+                    <tr>
+                        <td align="left" style="padding: 15px 10px 25px 10px;">
+                            <span style="font-size: 24px; font-weight: 900; color: #0f172a; font-family: 'Segoe UI', Arial, sans-serif; letter-spacing: -0.5px;">
+                                ESPRIT<span style="color: #9f0d15;">.AI</span>
+                            </span>
+                        </td>
+                    </tr>
+
+                    <!-- Main White Card -->
+                    <tr>
+                        <td style="background-color: #ffffff; border-radius: 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05); padding: 36px 30px; border: 1px solid #e2e8f0;">
+                            
+                            <p style="margin: 0 0 18px 0; color: #0f172a; font-size: 16px; font-weight: 600;">Bonjour,</p>
+                            <p style="margin: 0 0 26px 0; color: #334155; font-size: 15px; line-height: 1.6;">
+                                <strong style="color: #0f172a; font-weight: 700;">{creator_name}</strong> vous invite à participer à une séance interactive en direct sur la plateforme ESPRIT AI.
+                            </p>
+
+                            <!-- 2x2 Grid Info Box (Pure HTML & CSS Badges - No broken img tags) -->
+                            <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; margin-bottom: 30px; border-collapse: separate; border-spacing: 0; overflow: hidden;">
+                                <!-- Top Row -->
+                                <tr>
+                                    <!-- Top Left: Sujet -->
+                                    <td width="50%" align="center" style="padding: 24px 15px; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            Sujet
+                                        </div>
+                                        <div style="font-size: 15px; font-weight: 700; color: #0f172a; word-break: break-word;">
+                                            {meeting.title}
+                                        </div>
+                                    </td>
+                                    <!-- Top Right: Date & Heure -->
+                                    <td width="50%" align="center" style="padding: 24px 15px; border-bottom: 1px solid #e2e8f0; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            Date & Heure
+                                        </div>
+                                        <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
+                                            {formatted_date}
+                                        </div>
+                                    </td>
+                                </tr>
+                                <!-- Bottom Row -->
+                                <tr>
+                                    <!-- Bottom Left: Durée -->
+                                    <td width="50%" align="center" style="padding: 24px 15px; border-right: 1px solid #e2e8f0; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            Durée
+                                        </div>
+                                        <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
+                                            {meeting.duration_minutes} minutes
+                                        </div>
+                                    </td>
+                                    <!-- Bottom Right: Code Room -->
+                                    <td width="50%" align="center" style="padding: 24px 15px; text-align: center; vertical-align: middle;">
+                                        <div style="font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #9f0d15; text-transform: uppercase; margin-bottom: 6px;">
+                                            Code Room
+                                        </div>
+                                        <div style="font-size: 15px; font-family: SFMono-Regular, Consolas, monospace; color: #0f172a; font-weight: 800; background-color: #e2e8f0; padding: 4px 10px; border-radius: 6px; display: inline-block;">
+                                            {meeting.room_id}
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Call To Action Button -->
+                            <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom: 28px;">
+                                <tr>
+                                    <td align="center">
+                                        <table role="presentation" border="0" cellspacing="0" cellpadding="0">
+                                            <tr>
+                                                <td align="center" bgcolor="#8C0A10" style="border-radius: 30px; background-color: #8C0A10; box-shadow: 0 6px 18px rgba(140, 10, 16, 0.3);">
+                                                    <a href="{join_link}" target="_blank" style="font-size: 16px; font-weight: 800; color: #ffffff !important; text-decoration: none; padding: 16px 38px; border-radius: 30px; display: inline-block; background-color: #8C0A10; border: 1px solid #8C0A10; letter-spacing: 0.3px;">
+                                                        Rejoindre la Séance
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Direct Link Fallback -->
+                            <div style="background-color: #f1f5f9; padding: 14px 18px; border-radius: 12px; text-align: center; font-size: 12px; color: #64748b; line-height: 1.5;">
+                                Si le bouton ne s'affiche pas correctement, copiez ce lien :<br>
+                                <a href="{join_link}" target="_blank" style="color: #0f172a !important; font-weight: 700; text-decoration: underline; word-break: break-all; margin-top: 4px; display: inline-block;">
+                                    {join_link}
+                                </a>
+                            </div>
+
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td align="center" style="padding: 25px 20px 10px 20px; text-align: center; font-size: 12px; color: #94a3b8;">
+                            © ESPRIT AI Platform • Notification automatique de séance en direct
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
+    text_content = f"Bonjour,\n\n{creator_name} vous invite à la séance '{meeting.title}' prévue le {formatted_date} ({meeting.duration_minutes} min).\nRejoindre : {join_link}\n\nCordialement."
+
+    targets = []
+    if data.recipient_emails:
+        targets.extend(data.recipient_emails)
+    if data.recipient_email:
+        targets.append(data.recipient_email)
+
+    targets = list(dict.fromkeys([e.strip() for e in targets if e and e.strip()]))
+    if not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Veuillez fournir au moins une adresse email valide."
+        )
+
+    sent_count = 0
+    failed_emails = []
+
+    for email in targets:
+        ok = send_email(
+            to_email=email,
+            subject=subject,
+            body_html=html_content,
+            body_text=text_content
+        )
+        if ok:
+            sent_count += 1
+        else:
+            failed_emails.append(email)
+
+    if sent_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Échec de l'envoi des emails via le serveur SMTP. Vérifiez vos identifiants Gmail."
+        )
+
+    msg = f"Invitation envoyée avec succès par email à {sent_count} destinataire(s)."
+    if failed_emails:
+        msg += f" (Échec pour : {', '.join(failed_emails)})"
+
+    return {"status": "success", "message": msg, "sent_count": sent_count, "failed_count": len(failed_emails)}
 
 
 class LockSessionRequest(BaseModel):

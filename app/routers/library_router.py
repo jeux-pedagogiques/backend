@@ -46,10 +46,12 @@ async def list_library(
 ):
     """List library items with combined filters, FTS and pagination."""
 
-    # Auto-sync missing CasEtude items into LibraryItem
+    # Auto-sync missing CasEtude & Quiz items into LibraryItem
     try:
         from app.models.cas_etude import CasEtude
+        from app.models.quiz import Quiz
         from app.services.library_service import register_library_item
+
         all_cases = session.exec(select(CasEtude).where(CasEtude.user_id == current_user.id)).all()
         for cas in all_cases:
             existing = session.exec(
@@ -70,6 +72,34 @@ async def list_library(
                     niveaux_bloom=["analyser", "evaluer", "creer"],
                     concepts_cles=[]
                 )
+
+        all_quizzes = session.exec(select(Quiz).where(Quiz.user_id == current_user.id)).all()
+        for quiz in all_quizzes:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "quiz",
+                    LibraryItem.game_id == quiz.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                module = session.get(ModuleAnalysis, quiz.module_id) if quiz.module_id else None
+                niveaux = list({
+                    lo.get("bloom_level", "")
+                    for lo in (module.learning_outcomes if module and module.learning_outcomes else [])
+                    if lo.get("bloom_level")
+                }) if module else ["memoriser", "comprendre"]
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="quiz",
+                    game_id=quiz.id,
+                    module_id=quiz.module_id,
+                    titre=quiz.titre,
+                    niveaux_bloom=niveaux,
+                    concepts_cles=module.key_concepts if module and module.key_concepts else []
+                )
+
         session.commit()
     except Exception as e:
         pass
@@ -363,3 +393,39 @@ async def archive(
         archived=lib_item.archived,
         created_at=lib_item.created_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /library/{game_type}/{game_id} — delete game item
+# ---------------------------------------------------------------------------
+
+@router.delete("/{game_type}/{game_id}")
+async def delete_game_item(
+    game_type: str,
+    game_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Permanently delete a game item from library and its underlying table."""
+    lib_item = session.exec(
+        select(LibraryItem).where(
+            LibraryItem.game_type == game_type,
+            LibraryItem.game_id == game_id,
+            LibraryItem.user_id == current_user.id,
+        )
+    ).first()
+
+    if lib_item:
+        session.delete(lib_item)
+
+    try:
+        game = _get_game_or_404(session, game_type, game_id)
+        owner_field = "user_id" if hasattr(game, "user_id") else "prof_id"
+        if getattr(game, owner_field) == current_user.id:
+            session.delete(game)
+    except Exception:
+        pass
+
+    session.commit()
+    return {"status": "ok", "message": "Jeu supprimé avec succès."}
+

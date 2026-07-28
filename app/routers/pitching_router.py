@@ -280,7 +280,72 @@ def list_sessions(
     sessions = session.exec(
         select(PitchingSession).where(PitchingSession.prof_id == current_user.id)
     ).all()
-    return [
-        {"id": s.id, "titre": s.titre, "statut": s.statut, "mode": s.mode, "created_at": s.created_at.isoformat()}
-        for s in sessions
-    ]
+    
+    result = []
+    for s in sessions:
+        mod_title = None
+        if s.module_id:
+            mod = session.get(ModuleAnalysis, s.module_id)
+            if mod:
+                mod_title = mod.module_title
+        result.append({
+            "id": s.id,
+            "titre": s.titre,
+            "statut": s.statut,
+            "mode": s.mode,
+            "module_id": s.module_id,
+            "module_title": mod_title,
+            "created_at": s.created_at.isoformat()
+        })
+    return result
+
+
+@router.get("/sessions/{session_id}")
+def get_session_detail(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ps = session.get(PitchingSession, session_id)
+    if not ps or ps.prof_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+
+    import json
+    data = {}
+    if ps.description:
+        try:
+            data = json.loads(ps.description)
+        except Exception:
+            data = {"titre_challenge": ps.titre, "sujet_principal": ps.description}
+
+    mod_title = None
+    if ps.module_id:
+        mod = session.get(ModuleAnalysis, ps.module_id)
+        if mod:
+            mod_title = mod.module_title
+
+    return {
+        "id": ps.id,
+        "titre": ps.titre,
+        "module_id": ps.module_id,
+        "module_title": mod_title,
+        "statut": ps.statut,
+        "mode": ps.mode,
+        "created_at": ps.created_at.isoformat(),
+        "data": data
+    }
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    ps = session.get(PitchingSession, session_id)
+    if not ps or ps.prof_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+    session.delete(ps)
+    session.commit()
+    return {"status": "ok", "message": "Pitching challenge supprimé avec succès."}
+
