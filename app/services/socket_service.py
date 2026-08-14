@@ -9,6 +9,8 @@ from app.models.cas_etude import CasEtude, EquipeCasEtude, RoleAssignment, Decis
 from app.models.mindmap import MindMap, MindMapNode
 from app.models.debat import Debat, ParticipantDebat, PriseDeParole, NoteObservateur
 from app.models.negociation import Negociation, GroupeNegociation, AssignationPersonnage, AccordFinal
+from app.models.atelier_feedback import AtelierFeedback, PresentationAtelier, FeedbackRecu
+
 
 logger = logging.getLogger(__name__)
 
@@ -1454,6 +1456,296 @@ async def on_negociation_end(sid, data):
         await sio.emit("negociation:debriefing", payload, room=room)
         logger.info(f"Negotiation session {session_code} ended, debriefing broadcast")
         return {"status": "success", "debriefing": payload}
+
+
+# ==========================================
+# ATELIER FEEDBACK PAIR EVENTS
+# ==========================================
+
+@sio.on("atelier:launch")
+async def on_atelier_launch(sid, data):
+    """
+    Launches an Atelier Feedback Pair session.
+    Broadcasts criteria grid and presentation list to session room.
+    """
+    session_code = data.get("session_code")
+    session_id = data.get("session_id")
+    atelier_feedback_id = data.get("atelier_feedback_id")
+    presentations_input = data.get("presentations", [])
+
+    if not atelier_feedback_id:
+        return {"status": "error", "message": "Missing atelier_feedback_id"}
+
+    with Session(engine) as db:
+        atelier = db.get(AtelierFeedback, atelier_feedback_id)
+        if not atelier:
+            return {"status": "error", "message": "Atelier feedback not found"}
+
+        # Create presentations if provided
+        if presentations_input:
+            for idx, p_item in enumerate(presentations_input):
+                part_id = str(p_item.get("participant_ou_groupe_id") or f"p_{idx + 1}")
+                nom_pres = p_item.get("nom_presentateur") or part_id
+                ordre = p_item.get("ordre_passage", idx + 1)
+
+                # Check if presentation exists
+                existing = db.exec(
+                    select(PresentationAtelier).where(
+                        PresentationAtelier.atelier_feedback_id == atelier.id,
+                        PresentationAtelier.participant_ou_groupe_id == part_id
+                    )
+                ).first()
+                if not existing:
+                    pres = PresentationAtelier(
+                        session_id=session_id,
+                        atelier_feedback_id=atelier.id,
+                        participant_ou_groupe_id=part_id,
+                        nom_presentateur=nom_pres,
+                        ordre_passage=ordre,
+                        statut="en_attente"
+                    )
+                    db.add(pres)
+            db.commit()
+
+        # Fetch all presentations for this atelier
+        presentations = db.exec(
+            select(PresentationAtelier)
+            .where(PresentationAtelier.atelier_feedback_id == atelier.id)
+            .order_by(PresentationAtelier.ordre_passage)
+        ).all()
+
+        pres_list = [
+            {
+                "id": p.id,
+                "session_id": p.session_id,
+                "atelier_feedback_id": p.atelier_feedback_id,
+                "participant_ou_groupe_id": p.participant_ou_groupe_id,
+                "nom_presentateur": p.nom_presentateur or p.participant_ou_groupe_id,
+                "ordre_passage": p.ordre_passage,
+                "statut": p.statut
+            }
+            for p in presentations
+        ]
+
+        payload = {
+            "atelier_feedback_id": atelier.id,
+            "module_id": atelier.module_id,
+            "titre": atelier.titre,
+            "criteres": atelier.criteres,
+            "structure_grille": atelier.structure_grille,
+            "anonyme": atelier.anonyme,
+            "presentations": pres_list
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("atelier:launched", payload, room=room)
+        else:
+            await sio.emit("atelier:launched", payload)
+
+        logger.info(f"Atelier Feedback {atelier.id} launched for session {session_code}")
+        return {"status": "success", "atelier": payload}
+
+
+@sio.on("atelier:start_presentation")
+async def on_atelier_start_presentation(sid, data):
+    """
+    Indicates which presentation/presenter is currently active.
+    """
+    session_code = data.get("session_code")
+    presentation_id = data.get("presentation_id")
+
+    if not presentation_id:
+        return {"status": "error", "message": "Missing presentation_id"}
+
+    with Session(engine) as db:
+        target_pres = db.get(PresentationAtelier, presentation_id)
+        if not target_pres:
+            return {"status": "error", "message": "Presentation not found"}
+
+        # Update statuses of all presentations in this atelier
+        all_pres = db.exec(
+            select(PresentationAtelier).where(PresentationAtelier.atelier_feedback_id == target_pres.atelier_feedback_id)
+        ).all()
+
+        for p in all_pres:
+            if p.id == target_pres.id:
+                p.statut = "en_cours"
+            elif p.statut == "en_cours":
+                p.statut = "termine"
+            db.add(p)
+        db.commit()
+        db.refresh(target_pres)
+
+        payload = {
+            "presentation_id": target_pres.id,
+            "atelier_feedback_id": target_pres.atelier_feedback_id,
+            "participant_ou_groupe_id": target_pres.participant_ou_groupe_id,
+            "nom_presentateur": target_pres.nom_presentateur or target_pres.participant_ou_groupe_id,
+            "ordre_passage": target_pres.ordre_passage,
+            "statut": target_pres.statut
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("atelier:presentation_started", payload, room=room)
+        else:
+            await sio.emit("atelier:presentation_started", payload)
+
+        logger.info(f"Presentation {presentation_id} started in session {session_code}")
+        return {"status": "success", "presentation": payload}
+
+
+@sio.on("atelier:submit_feedback")
+async def on_atelier_submit_feedback(sid, data):
+    """
+    Submit a peer feedback grid for the current active presenter.
+    Ensures evaluateur_id is stripped if anonyme=true.
+    """
+    session_code = data.get("session_code")
+    presentation_id = data.get("presentation_id")
+    evaluateur_id_input = data.get("evaluateur_id")
+    notes_par_critere = data.get("notes_par_critere", {})
+    points_positifs = data.get("points_positifs", "")
+    axes_amelioration = data.get("axes_amelioration", "")
+    note_synthese = data.get("note_synthese")
+
+    if not presentation_id:
+        return {"status": "error", "message": "Missing presentation_id"}
+
+    with Session(engine) as db:
+        pres = db.get(PresentationAtelier, presentation_id)
+        if not pres:
+            return {"status": "error", "message": "Presentation not found"}
+
+        atelier = db.get(AtelierFeedback, pres.atelier_feedback_id)
+        is_anonyme = atelier.anonyme if atelier else True
+
+        # STRICT ANONYMITY REQUIREMENT:
+        # If anonyme=True, evaluateur_id must NOT be stored in DB!
+        evaluateur_id = None if is_anonyme else (evaluateur_id_input or sid)
+
+        feedback = FeedbackRecu(
+            presentation_id=pres.id,
+            evaluateur_id=evaluateur_id,
+            notes_par_critere=notes_par_critere,
+            points_positifs=points_positifs,
+            axes_amelioration=axes_amelioration,
+            note_synthese=float(note_synthese) if note_synthese is not None else None
+        )
+        db.add(feedback)
+        db.commit()
+        db.refresh(feedback)
+
+        # Count total feedbacks received for this presentation
+        all_fb = db.exec(
+            select(FeedbackRecu).where(FeedbackRecu.presentation_id == pres.id)
+        ).all()
+        total_count = len(all_fb)
+
+        count_payload = {
+            "presentation_id": pres.id,
+            "total_feedbacks": total_count
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("atelier:feedback_count_updated", count_payload, room=room)
+        else:
+            await sio.emit("atelier:feedback_count_updated", count_payload)
+
+        logger.info(f"Feedback submitted for presentation {presentation_id} (anonyme={is_anonyme})")
+        return {"status": "success", "feedback_id": feedback.id, "total_feedbacks": total_count}
+
+
+@sio.on("atelier:show_aggregated")
+async def on_atelier_show_aggregated(sid, data):
+    """
+    Aggregates and broadcasts consolidated peer feedback for a presenter.
+    STRICT ANONYMITY REQUIREMENT: if anonyme=true, evaluateur_id is set to None
+    and ordering of feedback list / text points is server-side shuffled.
+    """
+    session_code = data.get("session_code")
+    presentation_id = data.get("presentation_id")
+
+    if not presentation_id:
+        return {"status": "error", "message": "Missing presentation_id"}
+
+    with Session(engine) as db:
+        pres = db.get(PresentationAtelier, presentation_id)
+        if not pres:
+            return {"status": "error", "message": "Presentation not found"}
+
+        atelier = db.get(AtelierFeedback, pres.atelier_feedback_id)
+        is_anonyme = atelier.anonyme if atelier else True
+
+        feedbacks = db.exec(
+            select(FeedbackRecu).where(FeedbackRecu.presentation_id == pres.id)
+        ).all()
+
+        total_feedbacks = len(feedbacks)
+        notes_synthese = [f.note_synthese for f in feedbacks if f.note_synthese is not None]
+        moyenne_note_synthese = (sum(notes_synthese) / len(notes_synthese)) if notes_synthese else None
+
+        # Compute average per criterion
+        criteres_totals: dict[str, list[float]] = {}
+        for f in feedbacks:
+            if f.notes_par_critere and isinstance(f.notes_par_critere, dict):
+                for crit, val in f.notes_par_critere.items():
+                    if isinstance(val, (int, float)):
+                        criteres_totals.setdefault(crit, []).append(float(val))
+
+        moyennes_par_critere = {
+            crit: (sum(vals) / len(vals))
+            for crit, vals in criteres_totals.items()
+        }
+
+        points_positifs_list = [f.points_positifs for f in feedbacks if f.points_positifs]
+        axes_amelioration_list = [f.axes_amelioration for f in feedbacks if f.axes_amelioration]
+
+        # Build list of detailed feedbacks
+        feedbacks_detail = [
+            {
+                "id": f.id,
+                "evaluateur_id": None if is_anonyme else f.evaluateur_id,
+                "notes_par_critere": f.notes_par_critere,
+                "points_positifs": f.points_positifs,
+                "axes_amelioration": f.axes_amelioration,
+                "note_synthese": f.note_synthese,
+                "created_at": f.created_at.isoformat() if f.created_at else None
+            }
+            for f in feedbacks
+        ]
+
+        # STRICT ANONYMITY SHUFFLE REQUIREMENT:
+        if is_anonyme:
+            random.shuffle(feedbacks_detail)
+            random.shuffle(points_positifs_list)
+            random.shuffle(axes_amelioration_list)
+
+        payload = {
+            "presentation_id": pres.id,
+            "participant_ou_groupe_id": pres.participant_ou_groupe_id,
+            "nom_presentateur": pres.nom_presentateur or pres.participant_ou_groupe_id,
+            "atelier_titre": atelier.titre if atelier else "Atelier Feedback",
+            "anonyme": is_anonyme,
+            "total_feedbacks": total_feedbacks,
+            "moyenne_note_synthese": moyenne_note_synthese,
+            "moyennes_par_critere": moyennes_par_critere,
+            "compilation_points_positifs": points_positifs_list,
+            "compilation_axes_amelioration": axes_amelioration_list,
+            "feedbacks": feedbacks_detail
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("atelier:aggregated_results", payload, room=room)
+        else:
+            await sio.emit("atelier:aggregated_results", payload)
+
+        logger.info(f"Aggregated results broadcast for presentation {presentation_id}")
+        return {"status": "success", "aggregated": payload}
+
 
 
 
