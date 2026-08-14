@@ -70,6 +70,7 @@ async def generate_escape_room(
             mode=data.mode,
             duree_totale=data.duree_totale,
             nb_equipes=data.nb_equipes,
+            model=data.model,
         )
     except ValueError as e:
         raise HTTPException(

@@ -2,7 +2,11 @@
 
 import json
 import logging
-from app.services.gemini_service import _call_gemini_api, get_gemini_config
+from app.services.gemini_service import (
+    get_gemini_config,
+    has_any_ai_key,
+    _call_gemini_api,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +94,12 @@ async def generate_escape_room(
     mode: str,
     duree_totale: int,
     nb_equipes: int,
+    model: str | None = None,
 ) -> dict:
-    """Generate a pedagogical escape room using Gemini from learning outcomes."""
-    api_key, model, api_url = get_gemini_config()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    """Generate a pedagogical escape room using specified or default AI model."""
+    api_key, default_model, api_url = get_gemini_config()
+    if not api_key and not has_any_ai_key():
+        raise ValueError("Aucune clé API IA (GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) n'est configurée dans le fichier .env.")
 
     # Format the outcomes for the prompt
     formatted_outcomes = ""
@@ -119,18 +124,12 @@ async def generate_escape_room(
         "responseSchema": ESCAPE_ROOM_RESPONSE_SCHEMA,
     }
 
-    model_lower = model.lower()
-    if "3.5" in model_lower:
-        generation_config["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
-    elif "2.5" in model_lower:
-        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
-
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": generation_config,
     }
 
-    result = await _call_gemini_api(payload, timeout=180.0)
+    result = await _call_gemini_api(payload, timeout=180.0, requested_model=model)
 
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]

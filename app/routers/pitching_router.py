@@ -22,6 +22,7 @@ class GeneratePitchingRequest(BaseModel):
     duree_preparation: int = 10
     duree_pitch: int = 3
     duree_feedback: int = 5
+    model: str | None = None
 
 
 class CreatePitchingSessionRequest(BaseModel):
@@ -93,6 +94,7 @@ async def generate_challenge(
             duree_preparation=data.duree_preparation,
             duree_pitch=data.duree_pitch,
             duree_feedback=data.duree_feedback,
+            model=data.model,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la génération du pitching : {str(e)}")

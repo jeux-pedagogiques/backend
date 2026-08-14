@@ -16,6 +16,8 @@ from app.routers.library_router import router as library_router
 from app.routers.share_router import router as share_router
 from app.routers.cas_etude_router import router as cas_etude_router
 from app.routers.mindmap_router import router as mindmap_router
+from app.routers.debat_router import router as debat_router
+from app.routers.negociation_router import router as negociation_router
 from app.services.socket_service import socket_app
 
 # Import models to ensure they are registered in metadata
@@ -53,6 +55,8 @@ app.include_router(library_router)
 app.include_router(share_router)
 app.include_router(cas_etude_router)
 app.include_router(mindmap_router)
+app.include_router(debat_router)
+app.include_router(negociation_router)
 
 # Mount Socket.io ASGI application
 app.mount("/", socket_app)

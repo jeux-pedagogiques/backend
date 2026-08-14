@@ -10,6 +10,8 @@ from app.models.library_item import LibraryItem  # noqa: F401
 from app.models.game_share import GameShare, GameResult  # noqa: F401
 from app.models.cas_etude import CasEtude, EquipeCasEtude, RoleAssignment, DecisionEquipe  # noqa: F401
 from app.models.mindmap import MindMap, MindMapNode  # noqa: F401
+from app.models.debat import Debat, ParticipantDebat, PriseDeParole, NoteObservateur  # noqa: F401
+from app.models.negociation import Negociation, GroupeNegociation, AssignationPersonnage, AccordFinal  # noqa: F401
 
 
 

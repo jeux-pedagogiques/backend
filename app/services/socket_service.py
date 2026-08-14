@@ -7,6 +7,8 @@ from app.database import engine
 from app.models.quiz_session import QuizSession, QuizParticipant, QuizAttempt
 from app.models.cas_etude import CasEtude, EquipeCasEtude, RoleAssignment, DecisionEquipe
 from app.models.mindmap import MindMap, MindMapNode
+from app.models.debat import Debat, ParticipantDebat, PriseDeParole, NoteObservateur
+from app.models.negociation import Negociation, GroupeNegociation, AssignationPersonnage, AccordFinal
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ async def disconnect(sid):
                 # Broadcast updated participants list
                 statement_participants = select(QuizParticipant).where(QuizParticipant.session_id == quiz_session.id)
                 participants = db.exec(statement_participants).all()
-                plist = [{"id": p.id, "pseudo": p.pseudo, "score_total": p.score_total, "is_active": p.is_active} for p in participants]
+                plist = [{"id": p.id, "pseudo": p.pseudo, "score_total": p.score_total, "is_active": p.is_active, "socket_id": p.socket_id} for p in participants]
                 await sio.emit("session:participants_list", plist, room=room)
 
 
@@ -169,6 +171,14 @@ async def on_quiz_launch(sid, data):
 # In-memory store for active question correct answers and durations
 # session_id -> { "correct": str, "duration_s": int }
 active_questions = {}
+
+
+# In-memory store for debate turn management (server-side chrono)
+# debat_id -> { "participant_id": str, "pseudo": str, "camp": str, "start": datetime, "duree_max": int }
+active_interventions = {}
+
+# debat_id -> socket sid of the professor who launched it (for live-only observer notes)
+debat_prof_sids = {}
 
 
 @sio.on("quiz:next_question")
@@ -302,7 +312,7 @@ async def on_session_join(sid, data):
         # Broadcast fresh participants list to all room members
         statement_participants = select(QuizParticipant).where(QuizParticipant.session_id == quiz_session.id)
         participants = db.exec(statement_participants).all()
-        plist = [{"id": p.id, "pseudo": p.pseudo, "score_total": p.score_total, "is_active": p.is_active} for p in participants]
+        plist = [{"id": p.id, "pseudo": p.pseudo, "score_total": p.score_total, "is_active": p.is_active, "socket_id": p.socket_id} for p in participants]
         await sio.emit("session:participants_list", plist, room=room)
 
         return {
@@ -802,5 +812,648 @@ async def on_mindmap_move_node(sid, data):
         room = f"session_{session_code}" if session_code else f"team_{equipe_id}"
         await sio.emit("mindmap:node_moved", payload, room=room)
         return {"status": "success", "node": payload}
+
+
+# ==========================================
+# DÉBAT STRUCTURÉ EVENTS
+# ==========================================
+
+
+def _assign_debat_camp_role(index: int) -> tuple[str, str]:
+    """Assign a camp + role to a participant by index.
+
+    Index 0 -> modérateur (neutre)
+    Index 1 -> observateur-rapporteur (neutre)
+    Reste   -> avocat (camp pour) / avocat_du_diable (camp contre) en alternance.
+    """
+    if index == 0:
+        return "neutre", "moderateur"
+    if index == 1:
+        return "neutre", "observateur_rapporteur"
+    if index % 2 == 0:
+        return "pour", "avocat"
+    return "contre", "avocat_du_diable"
+
+
+@sio.on("debat:launch")
+async def on_debat_launch(sid, data):
+    """
+    Professor launches a Debate.
+    Distributes the problematique + initial arguments to the room and assigns
+    a camp + role to every participant (private role info sent per socket).
+    """
+    debat_id = data.get("debat_id")
+    session_code = data.get("session_code")
+    session_id = data.get("session_id", 0)
+    participants = data.get("participants", [])  # [{id, pseudo, socket_id?}]
+
+    if not debat_id:
+        return {"status": "error", "message": "Missing debat_id"}
+
+    with Session(engine) as db:
+        debat = db.get(Debat, debat_id)
+        if not debat:
+            return {"status": "error", "message": "Débat introuvable."}
+
+        # Resolve the hosting session id from the room code when not provided
+        if not session_id and session_code:
+            quiz_session = db.exec(
+                select(QuizSession).where(
+                    QuizSession.code_session == session_code,
+                    QuizSession.statut != "terminee",
+                )
+            ).first()
+            session_id = quiz_session.id if quiz_session else 0
+
+        debat.statut = "en_cours"
+        db.add(debat)
+
+        roles_defs = debat.roles or []
+        created = []
+        for idx, part in enumerate(participants):
+            part_id = str(part.get("id") or part.get("socket_id") or f"part_{idx}")
+            part_pseudo = part.get("pseudo", f"Participant {idx + 1}")
+
+            camp, role = _assign_debat_camp_role(idx)
+
+            participant = ParticipantDebat(
+                session_id=session_id,
+                debat_id=debat.id,
+                participant_id=part_id,
+                pseudo=part_pseudo,
+                camp=camp,
+                role=role,
+            )
+            db.add(participant)
+            db.commit()
+            db.refresh(participant)
+
+            role_meta = next(
+                (r for r in roles_defs if r.get("nom_role") == role), {}
+            )
+
+            # Private role info -> only this participant's socket (NO broadcast)
+            role_private_payload = {
+                "debat_id": debat.id,
+                "participant_id": participant.id,
+                "camp": camp,
+                "role": role,
+                "role_description": role_meta.get("description", ""),
+                "missions": role_meta.get("missions", []),
+            }
+            target_sid = part.get("socket_id") or part_id
+            try:
+                await sio.emit("debat:your_role", role_private_payload, to=target_sid)
+            except Exception as e:
+                logger.warning(f"Could not send debat role info directly to sid {target_sid}: {e}")
+
+            created.append({
+                "participant_id": participant.id,
+                "client_id": part_id,
+                "participant_pseudo": part_pseudo,
+                "camp": camp,
+                "role": role,
+            })
+
+        # Remember the prof sid for live-only observer notes
+        debat_prof_sids[debat.id] = sid
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "debat_id": debat.id,
+            "session_id": session_id,
+            "problematique": debat.problematique,
+            "camp_pour": debat.camp_pour,
+            "camp_contre": debat.camp_contre,
+            "roles": debat.roles,
+            "questions_relance": debat.questions_relance,
+            "duree_intervention_secondes": data.get("duree_intervention_secondes", 120),
+            "participants": created,
+        }
+        if room:
+            await sio.emit("debat:launched", payload, room=room)
+        else:
+            await sio.emit("debat:launched", payload)
+
+        logger.info(f"Debate {debat.id} launched in session {session_code or session_id}")
+        return {"status": "success", "session_id": session_id, "participants": created}
+
+
+@sio.on("debat:start_intervention")
+async def on_debat_start_intervention(sid, data):
+    """
+    Start the speaking turn (server-side chrono) for the given participant.
+    Any still-open turn is finalized automatically (one speaker at a time).
+    """
+    debat_id = data.get("debat_id")
+    participant_id = str(data.get("participant_id", ""))
+    pseudo = data.get("pseudo", "Participant")
+    camp = data.get("camp", "neutre")
+    duree_max = int(data.get("duree_max", 120))
+    session_code = data.get("session_code")
+
+    if not debat_id:
+        return {"status": "error", "message": "Missing debat_id"}
+
+    now = datetime.utcnow()
+
+    with Session(engine) as db:
+        debat = db.get(Debat, debat_id)
+        if not debat or debat.statut != "en_cours":
+            return {"status": "error", "message": "Débat introuvable ou non lancé."}
+
+        # Auto-finalize a still-open intervention (strict turn management)
+        if debat_id in active_interventions:
+            active_interventions.pop(debat_id)
+            open_prise = db.exec(
+                select(PriseDeParole).where(
+                    PriseDeParole.debat_id == debat_id,
+                    PriseDeParole.timestamp_fin.is_(None),
+                ).order_by(PriseDeParole.timestamp_debut.desc())
+            ).first()
+            if open_prise:
+                open_prise.timestamp_fin = now
+                open_prise.duree_secondes = max(
+                    0, int((now - open_prise.timestamp_debut).total_seconds())
+                )
+                db.add(open_prise)
+
+        prise = PriseDeParole(
+            debat_id=debat_id,
+            participant_id=participant_id,
+            pseudo=pseudo,
+            camp=camp,
+            timestamp_debut=now,
+        )
+        db.add(prise)
+        db.commit()
+        db.refresh(prise)
+
+        active_interventions[debat_id] = {
+            "participant_id": participant_id,
+            "pseudo": pseudo,
+            "camp": camp,
+            "start": now,
+            "duree_max": duree_max,
+        }
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "debat_id": debat_id,
+            "intervention_id": prise.id,
+            "participant_id": participant_id,
+            "pseudo": pseudo,
+            "camp": camp,
+            "duree_max": duree_max,
+            "start_timestamp": now.isoformat(),
+        }
+        if room:
+            await sio.emit("debat:intervention_started", payload, room=room)
+        else:
+            await sio.emit("debat:intervention_started", payload)
+
+        return {"status": "success", "intervention_id": prise.id}
+
+
+@sio.on("debat:end_intervention")
+async def on_debat_end_intervention(sid, data):
+    """
+    Stop the speaking turn, record the real server-side duration and save the
+    spoken argument text (if provided).
+    """
+    debat_id = data.get("debat_id")
+    contenu = (data.get("contenu") or "").strip()
+    session_code = data.get("session_code")
+
+    if not debat_id:
+        return {"status": "error", "message": "Missing debat_id"}
+
+    now = datetime.utcnow()
+    active = active_interventions.pop(debat_id, None)
+
+    with Session(engine) as db:
+        prise = db.exec(
+            select(PriseDeParole).where(
+                PriseDeParole.debat_id == debat_id,
+                PriseDeParole.timestamp_fin.is_(None),
+            ).order_by(PriseDeParole.timestamp_debut.desc())
+        ).first()
+
+        if not prise:
+            return {"status": "error", "message": "Aucune intervention en cours pour ce débat."}
+
+        if active:
+            duree = max(0, int((now - active["start"]).total_seconds()))
+        else:
+            duree = max(0, int((now - prise.timestamp_debut).total_seconds()))
+
+        prise.timestamp_fin = now
+        prise.duree_secondes = duree
+        if contenu:
+            prise.contenu = contenu
+        db.add(prise)
+        db.commit()
+        db.refresh(prise)
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "debat_id": debat_id,
+            "intervention_id": prise.id,
+            "participant_id": prise.participant_id,
+            "pseudo": prise.pseudo,
+            "camp": prise.camp,
+            "duree_secondes": prise.duree_secondes,
+            "contenu": prise.contenu,
+        }
+        if room:
+            await sio.emit("debat:intervention_ended", payload, room=room)
+        else:
+            await sio.emit("debat:intervention_ended", payload)
+
+        return {"status": "success", "intervention_id": prise.id, "duree_secondes": prise.duree_secondes}
+
+
+@sio.on("debat:add_observer_note")
+async def on_debat_add_observer_note(sid, data):
+    """
+    Observer writes a note.
+    Live: emitted privately ONLY to the professor's socket.
+    Final: available to everyone via GET /api/debat/{session_id}/notes.
+    """
+    debat_id = data.get("debat_id")
+    participant_id = str(data.get("participant_id") or sid)
+    pseudo = data.get("pseudo", "Observateur")
+    note_texte = (data.get("note_texte") or "").strip()
+
+    if not debat_id:
+        return {"status": "error", "message": "Missing debat_id"}
+    if not note_texte:
+        return {"status": "error", "message": "Note vide."}
+
+    with Session(engine) as db:
+        debat = db.get(Debat, debat_id)
+        if not debat:
+            return {"status": "error", "message": "Débat introuvable."}
+
+        note = NoteObservateur(
+            debat_id=debat_id,
+            participant_id=participant_id,
+            pseudo=pseudo,
+            note_texte=note_texte,
+            timestamp=datetime.utcnow(),
+        )
+        db.add(note)
+        db.commit()
+        db.refresh(note)
+
+        payload = {
+            "debat_id": debat_id,
+            "note_id": note.id,
+            "participant_id": note.participant_id,
+            "pseudo": note.pseudo,
+            "note_texte": note.note_texte,
+            "timestamp": note.timestamp.isoformat() if note.timestamp else None,
+        }
+
+        # Live: only the professor sees the note (private emit)
+        prof_sid = debat_prof_sids.get(debat_id)
+        if prof_sid:
+            try:
+                await sio.emit("debat:observer_note", payload, to=prof_sid)
+            except Exception as e:
+                logger.warning(f"Could not emit observer note to prof {prof_sid}: {e}")
+
+        return {"status": "success", "note_id": note.id}
+
+
+@sio.on("debat:end")
+async def on_debat_end(sid, data):
+    """
+    End the debate: finalize the current turn, generate the automatic AI
+    synthesis from the PriseDeParole history and broadcast it to the room.
+    """
+    debat_id = data.get("debat_id")
+    session_code = data.get("session_code")
+
+    if not debat_id:
+        return {"status": "error", "message": "Missing debat_id"}
+
+    # Finalize any still-open intervention
+    active_interventions.pop(debat_id, None)
+
+    with Session(engine) as db:
+        debat = db.get(Debat, debat_id)
+        if not debat:
+            return {"status": "error", "message": "Débat introuvable."}
+
+        interventions = db.exec(
+            select(PriseDeParole)
+            .where(PriseDeParole.debat_id == debat.id)
+            .order_by(PriseDeParole.timestamp_debut)
+        ).all()
+        notes = db.exec(
+            select(NoteObservateur)
+            .where(NoteObservateur.debat_id == debat.id)
+            .order_by(NoteObservateur.timestamp)
+        ).all()
+
+        from app.services.debat_service import generate_debat_synthese
+
+        try:
+            debat.synthese = await generate_debat_synthese(
+                problematique=debat.problematique,
+                interventions=[
+                    {
+                        "pseudo": i.pseudo,
+                        "camp": i.camp,
+                        "contenu": i.contenu,
+                        "duree_secondes": i.duree_secondes,
+                    }
+                    for i in interventions
+                ],
+                notes=[n.note_texte for n in notes],
+            )
+        except RuntimeError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            logger.error(f"Failed to generate debate synthesis: {e}")
+            return {"status": "error", "message": f"Erreur lors de la génération de la synthèse : {e}"}
+
+        debat.statut = "terminee"
+        db.add(debat)
+        db.commit()
+        db.refresh(debat)
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "debat_id": debat.id,
+            "synthese": debat.synthese,
+            "nb_interventions": len(interventions),
+            "nb_notes": len(notes),
+        }
+        if room:
+            await sio.emit("debat:synthese", payload, room=room)
+        else:
+            await sio.emit("debat:synthese", payload)
+
+        logger.info(f"Debate {debat.id} ended, synthesis generated")
+        return {"status": "success", "synthese": debat.synthese}
+
+
+# ==========================================
+# SIMULATION DE NÉGOCIATION EVENTS
+# ==========================================
+
+@sio.on("negociation:launch")
+async def on_negociation_launch(sid, data):
+    """
+    Launch a Negotiation Simulation session.
+    Partitions participants into small groups/pairs, assigns character roles,
+    and sends targeted private character cards to each student (not broadcasted).
+    """
+    negociation_id = data.get("negociation_id")
+    session_code = data.get("session_code")
+
+    if not negociation_id or not session_code:
+        return {"status": "error", "message": "Missing negociation_id or session_code"}
+
+    with Session(engine) as db:
+        negociation = db.get(Negociation, negociation_id)
+        if not negociation:
+            return {"status": "error", "message": "Negotiation scenario not found"}
+
+        session_obj = db.exec(
+            select(QuizSession).where(QuizSession.code_session == session_code)
+        ).first()
+        if not session_obj:
+            return {"status": "error", "message": "Live session not found"}
+
+        # Fetch active room participants
+        participants = db.exec(
+            select(QuizParticipant).where(
+                QuizParticipant.session_id == session_obj.id,
+                QuizParticipant.is_active == True
+            )
+        ).all()
+
+        if not participants:
+            return {"status": "error", "message": "Aucun participant actif dans la session"}
+
+        personnages = negociation.personnages or []
+        if not personnages:
+            return {"status": "error", "message": "Aucun personnage défini dans le scénario"}
+
+        nb_per_group = len(personnages)
+        shuffled_participants = list(participants)
+        random.shuffle(shuffled_participants)
+
+        # Partition into groups
+        groupes_created = []
+        assignments_map = {}  # socket_id -> private character payload
+
+        group_count = 0
+        for i in range(0, len(shuffled_participants), nb_per_group):
+            group_count += 1
+            group_members = shuffled_participants[i:i + nb_per_group]
+            nom_groupe = f"Groupe Négociation #{group_count}"
+
+            groupe = GroupeNegociation(
+                session_id=session_obj.id,
+                negociation_id=negociation.id,
+                nom_groupe=nom_groupe,
+                statut="en_cours"
+            )
+            db.add(groupe)
+            db.commit()
+            db.refresh(groupe)
+
+            group_assignments = []
+            for idx, p in enumerate(group_members):
+                perso = personnages[idx % len(personnages)]
+                assignation = AssignationPersonnage(
+                    groupe_negociation_id=groupe.id,
+                    participant_id=str(p.id),
+                    nom_personnage=perso.get("nom_personnage", f"Rôle {idx+1}"),
+                    participant_pseudo=p.pseudo
+                )
+                db.add(assignation)
+
+                # Store targeted private payload for this participant
+                if p.socket_id:
+                    assignments_map[p.socket_id] = {
+                        "groupe_id": groupe.id,
+                        "nom_groupe": groupe.nom_groupe,
+                        "nom_personnage": perso.get("nom_personnage"),
+                        "role_description": perso.get("role_description"),
+                        "objectifs_secrets": perso.get("objectifs_secrets"),
+                        "arguments_cles": perso.get("arguments_cles", []),
+                        "lignes_rouges_et_compromis": perso.get("lignes_rouges_et_compromis")
+                    }
+
+                group_assignments.append({
+                    "participant_id": p.id,
+                    "pseudo": p.pseudo,
+                    "nom_personnage": perso.get("nom_personnage")
+                })
+
+            db.commit()
+            groupes_created.append({
+                "groupe_id": groupe.id,
+                "nom_groupe": groupe.nom_groupe,
+                "membres": group_assignments
+            })
+
+        room = f"session_{session_code}"
+
+        # 1. Broadcast PUBLIC scenario context to room
+        public_payload = {
+            "negociation_id": negociation.id,
+            "titre": negociation.titre,
+            "contexte_scenario": negociation.contexte_scenario,
+            "points_passage": negociation.points_passage or [],
+            "groupes": groupes_created
+        }
+        await sio.emit("negociation:launched", public_payload, room=room)
+
+        # 2. Emit TARGETED PRIVATE character cards directly to each participant socket
+        for target_sid, private_card in assignments_map.items():
+            try:
+                await sio.emit("negociation:your_character", private_card, to=target_sid)
+            except Exception as e:
+                logger.warning(f"Could not send targeted character card to {target_sid}: {e}")
+
+        logger.info(f"Negotiation {negociation.id} launched for session {session_code} with {len(groupes_created)} groups")
+        return {"status": "success", "groupes": groupes_created}
+
+
+@sio.on("negociation:passage_point")
+async def on_negociation_passage_point(sid, data):
+    """
+    Broadcast a milestone passage point notification according to server timer or professor trigger.
+    """
+    session_code = data.get("session_code")
+    etape = data.get("etape")
+    titre = data.get("titre")
+    instruction = data.get("instruction")
+
+    if not session_code:
+        return {"status": "error", "message": "Missing session_code"}
+
+    room = f"session_{session_code}"
+    payload = {
+        "etape": etape,
+        "titre": titre,
+        "instruction": instruction,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    await sio.emit("negociation:milestone", payload, room=room)
+    logger.info(f"Negotiation milestone step {etape} broadcast to session {session_code}")
+    return {"status": "success"}
+
+
+@sio.on("negociation:submit_accord")
+async def on_negociation_submit_accord(sid, data):
+    """
+    Submit final agreement summary for a negotiation group.
+    """
+    groupe_id = data.get("groupe_negociation_id")
+    resume_accord = data.get("resume_accord")
+    participant_redacteur_id = data.get("participant_redacteur_id")
+    statut_accord = data.get("statut_accord", "conclu")
+    session_code = data.get("session_code")
+
+    if not groupe_id or not resume_accord:
+        return {"status": "error", "message": "Missing groupe_negociation_id or resume_accord"}
+
+    with Session(engine) as db:
+        groupe = db.get(GroupeNegociation, groupe_id)
+        if not groupe:
+            return {"status": "error", "message": "Groupe de négociation non trouvé"}
+
+        # Upsert final agreement
+        existing_accord = db.exec(
+            select(AccordFinal).where(AccordFinal.groupe_negociation_id == groupe_id)
+        ).first()
+
+        if existing_accord:
+            existing_accord.resume_accord = resume_accord
+            existing_accord.participant_redacteur_id = str(participant_redacteur_id)
+            existing_accord.statut_accord = statut_accord
+            db.add(existing_accord)
+            accord = existing_accord
+        else:
+            accord = AccordFinal(
+                groupe_negociation_id=groupe_id,
+                resume_accord=resume_accord,
+                participant_redacteur_id=str(participant_redacteur_id),
+                statut_accord=statut_accord
+            )
+            db.add(accord)
+
+        groupe.statut = statut_accord
+        db.add(groupe)
+        db.commit()
+        db.refresh(accord)
+
+        room = f"session_{session_code}" if session_code else None
+        payload = {
+            "groupe_id": groupe.id,
+            "nom_groupe": groupe.nom_groupe,
+            "resume_accord": accord.resume_accord,
+            "statut_accord": accord.statut_accord,
+            "participant_redacteur_id": accord.participant_redacteur_id
+        }
+
+        if room:
+            await sio.emit("negociation:accord_submitted", payload, room=room)
+        else:
+            await sio.emit("negociation:accord_submitted", payload)
+
+        logger.info(f"Negotiation agreement submitted for group {groupe_id}")
+        return {"status": "success", "accord_id": accord.id}
+
+
+@sio.on("negociation:end")
+async def on_negociation_end(sid, data):
+    """
+    Conclude negotiation session and generate debriefing reflection payload.
+    """
+    session_code = data.get("session_code")
+    negociation_id = data.get("negociation_id")
+
+    if not session_code or not negociation_id:
+        return {"status": "error", "message": "Missing session_code or negociation_id"}
+
+    with Session(engine) as db:
+        negociation = db.get(Negociation, negociation_id)
+        session_obj = db.exec(
+            select(QuizSession).where(QuizSession.code_session == session_code)
+        ).first()
+
+        groupes = db.exec(
+            select(GroupeNegociation).where(GroupeNegociation.session_id == session_obj.id)
+        ).all() if session_obj else []
+
+        accords_list = []
+        for g in groupes:
+            accord = db.exec(
+                select(AccordFinal).where(AccordFinal.groupe_negociation_id == g.id)
+            ).first()
+            accords_list.append({
+                "nom_groupe": g.nom_groupe,
+                "statut": g.statut,
+                "resume_accord": accord.resume_accord if accord else "Pas d'accord formalisé"
+            })
+
+        room = f"session_{session_code}"
+        payload = {
+            "negociation_id": negociation_id,
+            "criteres_debriefing": negociation.criteres_debriefing if negociation else [],
+            "accords_groupes": accords_list
+        }
+        await sio.emit("negociation:debriefing", payload, room=room)
+        logger.info(f"Negotiation session {session_code} ended, debriefing broadcast")
+        return {"status": "success", "debriefing": payload}
+
 
 

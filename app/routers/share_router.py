@@ -17,10 +17,11 @@ from app.models.flashcard import FlashcardSet, Flashcard
 from app.models.pitching import PitchingSession
 from app.models.cas_etude import CasEtude
 from app.models.mindmap import MindMap
+from app.models.debat import Debat
 
 router = APIRouter(prefix="/api/shares", tags=["shares"])
 
-VALID_GAME_TYPES = {"quiz", "escape_room", "flashcards", "pitching", "cas_etude", "mindmap"}
+VALID_GAME_TYPES = {"quiz", "escape_room", "flashcards", "pitching", "cas_etude", "mindmap", "debat"}
 
 
 # ─── Request / Response Schemas ──────────────────────────────────────
@@ -144,7 +145,8 @@ def share_game_email(
         "flashcards": "Flashcards d'Étude",
         "pitching": "Challenge Pitching",
         "cas_etude": "Étude de Cas",
-        "mindmap": "Carte Mentale (Mind Map)"
+        "mindmap": "Carte Mentale (Mind Map)",
+        "debat": "Débat Structuré"
     }
     type_label = game_type_labels.get(req.game_type, "Activité Pédagogique")
 
@@ -469,6 +471,7 @@ def _get_game_or_404(session: Session, game_type: str, game_id: int, user_id: in
         "pitching": (PitchingSession, "prof_id"),
         "cas_etude": (CasEtude, "user_id"),
         "mindmap": (MindMap, "user_id"),
+        "debat": (Debat, "user_id"),
     }
     model_cls, owner_field = model_map[game_type]
     game = session.get(model_cls, game_id)
@@ -539,5 +542,17 @@ def _load_game_data(session: Session, game_type: str, game_id: int):
             "concept_central": mindmap.concept_central,
             "branches_suggerees": mindmap.branches_suggerees
         }, f"Mind Map : {mindmap.concept_central}"
+
+    elif game_type == "debat":
+        debat = session.get(Debat, game_id)
+        if not debat:
+            raise HTTPException(404, "Débat not found")
+        return {
+            "problematique": debat.problematique,
+            "camp_pour": debat.camp_pour,
+            "camp_contre": debat.camp_contre,
+            "roles": debat.roles,
+            "questions_relance": debat.questions_relance,
+        }, debat.problematique or "Débat structuré"
 
     raise HTTPException(400, "Unknown game type")

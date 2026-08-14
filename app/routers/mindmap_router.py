@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/mindmap", tags=["Mind Map"])
 class GenerateMindMapRequest(BaseModel):
     module_id: int
     nb_branches: Optional[int] = 4
+    model: Optional[str] = None
 
 
 @router.post("/generate", response_model=dict)
@@ -50,7 +51,8 @@ async def generate_mindmap_endpoint(
         learning_outcomes=outcomes_dict,
         key_concepts=module.key_concepts or [],
         keywords=module.keywords or [],
-        nb_branches=req.nb_branches or 4
+        nb_branches=req.nb_branches or 4,
+        model=req.model,
     )
 
     mindmap = MindMap(

@@ -18,6 +18,7 @@ class GenerateCasEtudeRequest(BaseModel):
     module_id: int
     nb_roles: Optional[int] = 3
     format_restitution: Optional[str] = "oral"
+    model: Optional[str] = None
 
 
 @router.post("/generate", response_model=dict)
@@ -51,7 +52,8 @@ async def generate_cas_etude_endpoint(
         key_concepts=module.key_concepts or [],
         keywords=module.keywords or [],
         nb_roles=req.nb_roles or 3,
-        format_restitution=req.format_restitution or "oral"
+        format_restitution=req.format_restitution or "oral",
+        model=req.model,
     )
 
     cas = CasEtude(

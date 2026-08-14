@@ -157,6 +157,7 @@ class AnalyzeRequest(BaseModel):
     """Schema for requesting AI analysis of module content."""
     content: str
     title: str | None = None
+    model: str | None = None
 
 
 class LearningOutcome(BaseModel):
@@ -193,7 +194,7 @@ async def analyze_module(
         )
 
     try:
-        result = await analyze_and_correct_module(data.content)
+        result = await analyze_and_correct_module(data.content, model=data.model)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -439,6 +440,7 @@ class GenerateQuizRequest(BaseModel):
     mode: str = "formatif"  # "compétitif" | "collaboratif" | "formatif"
     question_types: list[str] = ["qcm", "vrai_faux"]
     force: bool = False
+    model: str | None = None
 
 
 @router.post("/history/{analysis_id}/quiz")
@@ -478,7 +480,8 @@ async def generate_quiz(
             nb_questions=data.nb_questions,
             duree_par_question=data.duree_par_question,
             mode=data.mode,
-            question_types=data.question_types
+            question_types=data.question_types,
+            model=data.model,
         )
         
         # Save to DB for future requests
