@@ -45,6 +45,7 @@ async def generate_flashcards(
             key_concepts=entry.key_concepts or [],
             keywords=entry.keywords or [],
             nb_cartes=data.nb_cartes,
+            model=data.model,
         )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))

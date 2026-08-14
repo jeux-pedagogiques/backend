@@ -22,11 +22,218 @@ MAX_RETRIES_PER_MODEL = 2
 # Default wait in seconds when the server doesn't specify a retry delay
 DEFAULT_RETRY_DELAY = 55.0
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o"
+
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 KIMI_MODEL = "kimi-k3"
 
-# Fallback Gemini models to try when the primary model's quota is exhausted
-GEMINI_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.0-flash"]
+# Verified working Gemini models for Google API
+GEMINI_FALLBACK_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.5-flash-lite"
+]
+
+
+# ── Groq helpers ───────────────────────────────────────────────
+
+
+def _groq_headers() -> dict:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return {}
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+
+def _gemini_to_groq_payload(payload: dict, target_model: str | None = None) -> dict:
+    """Convert a Gemini-style payload to Groq (OpenAI-compatible) format."""
+    contents = payload.get("contents", [])
+    messages = []
+    system_content = None
+
+    for c in contents:
+        role = c.get("role", "user")
+        parts = c.get("parts", [])
+        text_parts = [p.get("text", "") for p in parts if "text" in p]
+        text = "\n".join(text_parts)
+
+        if role == "user" or not system_content:
+            messages.append({"role": "user", "content": text})
+        else:
+            system_content = text
+
+    generation_config = payload.get("generationConfig", {})
+    requested_tokens = generation_config.get("maxOutputTokens", 4000)
+    max_tokens = min(requested_tokens, 4000)
+    temperature = generation_config.get("temperature", 0.3)
+    model = target_model or os.getenv("GROQ_MODEL", GROQ_DEFAULT_MODEL)
+
+    groq_payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if system_content:
+        groq_payload["messages"] = [
+            {"role": "system", "content": system_content},
+            *groq_payload["messages"],
+        ]
+
+    response_schema = generation_config.get("responseSchema")
+    response_mime = generation_config.get("responseMimeType")
+    if response_schema and response_mime == "application/json":
+        groq_payload["response_format"] = {"type": "json_object"}
+
+    return groq_payload
+
+
+async def _try_groq(payload: dict, timeout: float, model: str | None = None) -> dict | None:
+    """Try calling Groq API. Returns parsed JSON or None on failure."""
+    headers = _groq_headers()
+    if not headers:
+        logger.info("GROQ_API_KEY not configured, skipping Groq.")
+        return None
+
+    groq_payload = _gemini_to_groq_payload(payload, target_model=model)
+    url = f"{GROQ_BASE_URL}/chat/completions"
+
+    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=groq_payload, headers=headers)
+        except Exception as e:
+            logger.warning("Groq request failed (attempt %d/%d): %s", attempt, MAX_RETRIES_PER_MODEL, e)
+            if attempt < MAX_RETRIES_PER_MODEL:
+                await asyncio.sleep(1.0)
+                continue
+            return None
+
+        if response.status_code in (400, 402, 429):
+            logger.warning("Groq status %d: %s. Skipping to fallback.", response.status_code, response.text[:150])
+            return None
+        elif response.status_code != 200:
+            logger.warning("Groq returned %d: %s, falling back.", response.status_code, response.text[:200])
+            return None
+
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.warning("Groq unexpected response format: %s", e)
+            return None
+
+    return None
+
+
+# ── OpenRouter helpers ─────────────────────────────────────────
+
+
+def _openrouter_headers() -> dict:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return {}
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://esprit-ai.local",
+        "X-Title": "ESPRIT AI Platform",
+        "Content-Type": "application/json"
+    }
+
+
+def _gemini_to_openrouter_payload(payload: dict, target_model: str | None = None) -> dict:
+    """Convert a Gemini-style payload to OpenRouter (OpenAI-compatible) format."""
+    contents = payload.get("contents", [])
+    messages = []
+    system_content = None
+
+    for c in contents:
+        role = c.get("role", "user")
+        parts = c.get("parts", [])
+        text_parts = [p.get("text", "") for p in parts if "text" in p]
+        text = "\n".join(text_parts)
+
+        if role == "user" or not system_content:
+            messages.append({"role": "user", "content": text})
+        else:
+            system_content = text
+
+    generation_config = payload.get("generationConfig", {})
+    requested_tokens = generation_config.get("maxOutputTokens", 4000)
+    max_tokens = min(requested_tokens, 4000)
+    temperature = generation_config.get("temperature", 0.3)
+    model = target_model or os.getenv("OPENROUTER_MODEL", OPENROUTER_DEFAULT_MODEL)
+
+    or_payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if system_content:
+        or_payload["messages"] = [
+            {"role": "system", "content": system_content},
+            *or_payload["messages"],
+        ]
+
+    response_schema = generation_config.get("responseSchema")
+    response_mime = generation_config.get("responseMimeType")
+    if response_schema and response_mime == "application/json":
+        or_payload["response_format"] = {"type": "json_object"}
+
+    return or_payload
+
+
+async def _try_openrouter(payload: dict, timeout: float, model: str | None = None) -> dict | None:
+    """Try calling OpenRouter. Returns parsed JSON or None on failure."""
+    headers = _openrouter_headers()
+    if not headers:
+        logger.info("OPENROUTER_API_KEY not configured, skipping OpenRouter.")
+        return None
+
+    or_payload = _gemini_to_openrouter_payload(payload, target_model=model)
+    url = f"{OPENROUTER_BASE_URL}/chat/completions"
+
+    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=or_payload, headers=headers)
+        except Exception as e:
+            logger.warning("OpenRouter request failed (attempt %d/%d): %s", attempt, MAX_RETRIES_PER_MODEL, e)
+            if attempt < MAX_RETRIES_PER_MODEL:
+                await asyncio.sleep(1.0)
+                continue
+            return None
+
+        if response.status_code in (402, 429):
+            logger.warning("OpenRouter status %d (credit/rate limit): %s. Skipping to fallback.", response.status_code, response.text[:150])
+            return None
+        elif response.status_code != 200:
+            logger.warning("OpenRouter returned %d: %s, falling back.", response.status_code, response.text[:200])
+            return None
+
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.warning("OpenRouter unexpected response format: %s", e)
+            return None
+
+    return None
 
 
 # ── Kimi (Moonshot) helpers ────────────────────────────────────
@@ -212,8 +419,8 @@ async def _try_gemini_model(api_key: str, model: str, payload: dict, timeout: fl
 async def _call_gemini_impl(payload: dict, timeout: float = 120.0) -> dict:
     """Call Gemini with model fallback (internal)."""
     api_key, primary_model, _ = get_gemini_config()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    if not api_key and not has_any_ai_key():
+        raise ValueError("Aucune clé API IA (GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) n'est configurée dans le fichier .env.")
 
     models_to_try = [primary_model]
     for fb in GEMINI_FALLBACK_MODELS:
@@ -241,19 +448,104 @@ async def _call_gemini_impl(payload: dict, timeout: float = 120.0) -> dict:
 # ── Public entry point: Kimi → Gemini fallback ────────────────
 
 
-async def _call_gemini_api(payload: dict, timeout: float = 120.0) -> dict:
-    """Send a request to the AI API with provider fallback.
+GITHUB_MODELS_BASE_URL = "https://models.inference.ai.azure.com"
+GITHUB_MODELS_DEFAULT_MODEL = "Llama-3.3-70B-Instruct"
 
-    Tries Kimi K3 first. Falls back to Gemini (with model fallback chain)
-    if Kimi is unavailable, rate-limited, or returns an error.
-    """
-    result = await _try_kimi(payload, timeout)
+def _github_models_headers() -> dict:
+    api_key = os.getenv("GITHUB_MODELS_API_KEY")
+    if not api_key:
+        return {}
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+async def _try_github_models(payload: dict, timeout: float, model: str | None = None) -> dict | None:
+    """Try calling GitHub Models API (Azure AI). Returns parsed JSON or None on failure."""
+    headers = _github_models_headers()
+    if not headers:
+        logger.info("GITHUB_MODELS_API_KEY not configured, skipping GitHub Models.")
+        return None
+
+    target_model = model or GITHUB_MODELS_DEFAULT_MODEL
+    gh_payload = _gemini_to_openrouter_payload(payload, target_model=target_model)
+    url = f"{GITHUB_MODELS_BASE_URL}/chat/completions"
+
+    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=gh_payload, headers=headers)
+        except Exception as e:
+            logger.warning("GitHub Models request failed (attempt %d/%d): %s", attempt, MAX_RETRIES_PER_MODEL, e)
+            if attempt < MAX_RETRIES_PER_MODEL:
+                await asyncio.sleep(1.0)
+                continue
+            return None
+
+        if response.status_code in (400, 402, 429):
+            logger.warning("GitHub Models status %d: %s. Skipping.", response.status_code, response.text[:150])
+            return None
+        elif response.status_code != 200:
+            logger.warning("GitHub Models returned %d: %s.", response.status_code, response.text[:200])
+            return None
+
+        try:
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.warning("GitHub Models unexpected response format: %s", e)
+            return None
+
+    return None
+
+
+async def _call_gemini_api(payload: dict, timeout: float = 120.0, requested_model: str | None = None) -> dict:
+    """Send a request directly to Google Gemini API with fallback models."""
+    if requested_model and requested_model != "auto":
+        req_clean = requested_model.strip()
+        logger.info("User requested explicit AI model: %s", req_clean)
+        
+        if req_clean.startswith("gemini/"):
+            model_id = req_clean.split("gemini/", 1)[1]
+            api_key, _, _ = get_gemini_config()
+            if api_key:
+                res = await _try_gemini_model(api_key, model_id, payload, timeout)
+                if res is not None:
+                    logger.info("Successfully used explicit Gemini model: %s", model_id)
+                    return res
+        else:
+            api_key, _, _ = get_gemini_config()
+            if api_key:
+                res = await _try_gemini_model(api_key, req_clean, payload, timeout)
+                if res is not None:
+                    logger.info("Successfully used requested Gemini model: %s", req_clean)
+                    return res
+
+    # 1. Primary AI Provider: Google Gemini
+    logger.info("Executing AI request via Google Gemini API...")
+    try:
+        return await _call_gemini_impl(payload, timeout)
+    except Exception as gem_err:
+        logger.warning("Gemini API call failed (%s). Checking secondary fallbacks...", gem_err)
+
+    # 2. Fallbacks if Gemini API is unreachable
+    result = await _try_groq(payload, timeout)
     if result is not None:
-        logger.info("Successfully used Kimi K3")
+        logger.info("Successfully used Groq fallback")
         return result
 
-    logger.info("Kimi K3 unavailable, falling back to Gemini...")
-    return await _call_gemini_impl(payload, timeout)
+    result = await _try_github_models(payload, timeout)
+    if result is not None:
+        logger.info("Successfully used GitHub Models fallback")
+        return result
+
+    result = await _try_openrouter(payload, timeout)
+    if result is not None:
+        logger.info("Successfully used OpenRouter fallback")
+        return result
+
+    raise RuntimeError("Toutes les requêtes d'IA (Google Gemini API) ont échoué.")
 
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -299,6 +591,16 @@ def get_gemini_config():
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     return api_key, model, url
 
+def has_any_ai_key() -> bool:
+    """Check if at least one AI provider API key is configured in environment."""
+    load_dotenv(override=True)
+    return bool(
+        os.getenv("GEMINI_API_KEY") or
+        os.getenv("OPENROUTER_API_KEY") or
+        os.getenv("GROQ_API_KEY") or
+        os.getenv("GITHUB_MODELS_API_KEY")
+    )
+
 ANALYSIS_PROMPT = """Tu es un expert en ingénierie pédagogique. Analyse la fiche module suivante et extrais les informations demandées au format JSON strict.
 
 **FICHE MODULE :**
@@ -336,15 +638,15 @@ Analyse le contenu ci-dessus et retourne un objet JSON avec EXACTEMENT cette str
 """
 
 
-async def analyze_module_content(content: str) -> dict:
+async def analyze_module_content(content: str, model: str | None = None) -> dict:
     """Send module content to Gemini API for AI analysis.
 
     Returns a structured dict with learning outcomes, Bloom levels,
     key concepts, duration and target audience.
     """
-    api_key, model, api_url = get_gemini_config()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    api_key, default_model, api_url = get_gemini_config()
+    if not api_key and not has_any_ai_key():
+        raise ValueError("Aucune clé API IA (GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) n'est configurée dans le fichier .env.")
 
     prompt = ANALYSIS_PROMPT.format(content=content)
 
@@ -354,17 +656,6 @@ async def analyze_module_content(content: str) -> dict:
         "responseMimeType": "application/json",
         "responseSchema": ANALYSIS_RESPONSE_SCHEMA,
     }
-
-    # Configure thinking budget/level for models that support/require it
-    model_lower = model.lower()
-    if "3.5" in model_lower:
-        generation_config["thinkingConfig"] = {
-            "thinkingLevel": "MINIMAL"
-        }
-    elif "2.5" in model_lower:
-        generation_config["thinkingConfig"] = {
-            "thinkingBudget": 0
-        }
 
     payload = {
         "contents": [
@@ -377,7 +668,7 @@ async def analyze_module_content(content: str) -> dict:
         "generationConfig": generation_config
     }
 
-    result = await _call_gemini_api(payload)
+    result = await _call_gemini_api(payload, requested_model=model)
 
     # Extract the text content from Gemini response
     try:
@@ -483,8 +774,8 @@ async def verify_analysis_with_gemini(original_content: str, gemini_analysis: di
     Returns a structured verification report.
     """
     api_key, model, api_url = get_gemini_config()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    if not api_key and not has_any_ai_key():
+        raise ValueError("Aucune clé API IA (GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) n'est configurée dans le fichier .env.")
 
     prompt = VERIFICATION_PROMPT.format(
         original_content=original_content,
@@ -593,12 +884,9 @@ Retourne l'analyse finale optimisée sous la forme d'un objet JSON strict avec E
 """
 
 
-async def analyze_and_correct_module(content: str) -> dict:
-    """Analyze module content using Gemini. 
-    
-    Optimized to use a single API call to conserve free-tier quota.
-    """
-    return await analyze_module_content(content)
+async def analyze_and_correct_module(content: str, model: str | None = None) -> dict:
+    """Analyze module content using specified or default AI model."""
+    return await analyze_module_content(content, model=model)
 
 
 QUIZ_RESPONSE_SCHEMA = {
@@ -681,12 +969,13 @@ async def generate_quiz_from_outcomes(
     nb_questions: int,
     duree_par_question: int,
     mode: str,
-    question_types: list[str]
+    question_types: list[str],
+    model: str | None = None
 ) -> dict:
     """Generate a timed quiz using Gemini from a list of learning outcomes and settings."""
-    api_key, model, api_url = get_gemini_config()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in the .env file.")
+    api_key, default_model, api_url = get_gemini_config()
+    if not api_key and not has_any_ai_key():
+        raise ValueError("Aucune clé API IA (GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) n'est configurée dans le fichier .env.")
 
     # Format the outcomes nicely for the prompt
     formatted_outcomes = ""
@@ -711,17 +1000,6 @@ async def generate_quiz_from_outcomes(
         "responseSchema": QUIZ_RESPONSE_SCHEMA,
     }
 
-    # Configure thinking budget
-    model_lower = model.lower()
-    if "3.5" in model_lower:
-        generation_config["thinkingConfig"] = {
-            "thinkingLevel": "MINIMAL"
-        }
-    elif "2.5" in model_lower:
-        generation_config["thinkingConfig"] = {
-            "thinkingBudget": 0
-        }
-
     payload = {
         "contents": [
             {
@@ -733,7 +1011,7 @@ async def generate_quiz_from_outcomes(
         "generationConfig": generation_config
     }
 
-    result = await _call_gemini_api(payload, timeout=180.0)
+    result = await _call_gemini_api(payload, timeout=180.0, requested_model=model)
 
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]

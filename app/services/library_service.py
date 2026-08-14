@@ -12,6 +12,8 @@ from app.models.escape_room import EscapeRoom
 from app.models.flashcard import FlashcardSet, Flashcard
 from app.models.pitching import PitchingSession
 from app.models.quiz import Quiz
+from app.models.cas_etude import CasEtude
+from app.models.debat import Debat
 from app.models.module_analysis import ModuleAnalysis
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,8 @@ GAME_TYPE_MAP: dict[str, type] = {
     "flashcards": FlashcardSet,
     "pitching": PitchingSession,
     "quiz": Quiz,
+    "cas_etude": CasEtude,
+    "debat": Debat,
 }
 
 
@@ -77,6 +81,8 @@ def _get_title_field(game_type: str, game) -> str:
         "flashcards": "titre",
         "pitching": "titre",
         "quiz": "titre",
+        "cas_etude": "titre",
+        "debat": "problematique",
     }
     return getattr(game, title_map.get(game_type, "titre"), "Sans titre")
 
@@ -159,6 +165,20 @@ def duplicate_game(
             mode=original.mode,
             quiz_data=copy.deepcopy(original.quiz_data),
             module_title=original.module_title,
+        )
+        session.add(dup)
+        session.flush()
+
+    elif game_type == "debat":
+        dup = Debat(
+            user_id=user_id,
+            module_id=new_module_id or original.module_id,
+            problematique=f"{original.problematique} (copie)",
+            camp_pour=copy.deepcopy(original.camp_pour or []),
+            camp_contre=copy.deepcopy(original.camp_contre or []),
+            roles=copy.deepcopy(original.roles or []),
+            questions_relance=copy.deepcopy(original.questions_relance or []),
+            statut="en_attente",
         )
         session.add(dup)
         session.flush()
@@ -309,6 +329,25 @@ async def regenerate_game(
         )
         game.titre = new_data.get("titre_quiz", game.titre)
         game.quiz_data = new_data
+        session.add(game)
+
+    elif game_type == "debat":
+        from app.services.debat_service import generate_debat
+
+        new_data = await generate_debat(
+            module_title=getattr(module, "module_title", "") if module else "",
+            learning_outcomes=learning_outcomes,
+            key_concepts=key_concepts,
+            keywords=keywords,
+            nb_arguments_par_camp=3,
+            duree_intervention_secondes=120,
+        )
+        game.problematique = new_data.get("problematique", game.problematique)
+        game.camp_pour = new_data.get("camp_pour", game.camp_pour)
+        game.camp_contre = new_data.get("camp_contre", game.camp_contre)
+        game.roles = new_data.get("roles", game.roles)
+        game.questions_relance = new_data.get("questions_relance", game.questions_relance)
+        game.statut = "en_attente"
         session.add(game)
 
     else:

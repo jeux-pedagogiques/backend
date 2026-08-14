@@ -42,6 +42,7 @@ class GenerateEscapeRoomRequest(BaseModel):
     mode: str = "collaboratif"  # "collaboratif" | "competitif"
     duree_totale: int = 45
     nb_equipes: int = 3
+    model: str | None = None
 
 
 class EscapeRoomResponse(BaseModel):

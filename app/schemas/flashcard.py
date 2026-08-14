@@ -6,6 +6,7 @@ class GenerateFlashcardRequest(BaseModel):
     """Request body for generating a flashcard set."""
     module_id: int
     nb_cartes: int = 20
+    model: str | None = None
 
 
 class FlashcardSetResponse(BaseModel):

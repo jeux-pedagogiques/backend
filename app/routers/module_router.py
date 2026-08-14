@@ -157,6 +157,7 @@ class AnalyzeRequest(BaseModel):
     """Schema for requesting AI analysis of module content."""
     content: str
     title: str | None = None
+    model: str | None = None
 
 
 class LearningOutcome(BaseModel):
@@ -193,7 +194,7 @@ async def analyze_module(
         )
 
     try:
-        result = await analyze_and_correct_module(data.content)
+        result = await analyze_and_correct_module(data.content, model=data.model)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -226,6 +227,7 @@ async def analyze_module(
 
 class SaveAnalysisRequest(BaseModel):
     """Request body to save an analysis result to history."""
+    analysis_id: int | None = None
     module_title: str
     original_content: str | None = None
     learning_outcomes: list[LearningOutcome]
@@ -261,24 +263,58 @@ async def save_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Save a validated module analysis result to the user's history."""
+    """Save or update a validated module analysis result in the user's history."""
     # Convert learning outcomes from Pydantic models to dicts for JSON column storage
     outcomes_dict = [lo.model_dump() for lo in data.learning_outcomes]
 
-    history_entry = ModuleAnalysis(
-        user_id=current_user.id,
-        module_title=data.module_title,
-        module_summary=data.module_summary,
-        original_content=data.original_content,
-        learning_outcomes=outcomes_dict,
-        key_concepts=data.key_concepts,
-        keywords=data.keywords,
-        central_notions=data.central_notions,
-        estimated_duration=data.estimated_duration,
-        target_audience=data.target_audience,
-    )
+    history_entry = None
+    if data.analysis_id:
+        history_entry = session.get(ModuleAnalysis, data.analysis_id)
+        if history_entry and history_entry.user_id != current_user.id:
+            history_entry = None
 
-    session.add(history_entry)
+    # Fallback: check if an entry with the exact same title exists for this user
+    if not history_entry:
+        statement = (
+            select(ModuleAnalysis)
+            .where(
+                ModuleAnalysis.user_id == current_user.id,
+                ModuleAnalysis.module_title == data.module_title,
+            )
+            .order_by(ModuleAnalysis.created_at.desc())
+        )
+        existing = session.exec(statement).first()
+        if existing:
+            history_entry = existing
+
+    if history_entry:
+        # Update existing entry
+        history_entry.module_title = data.module_title
+        history_entry.module_summary = data.module_summary
+        if data.original_content:
+            history_entry.original_content = data.original_content
+        history_entry.learning_outcomes = outcomes_dict
+        history_entry.key_concepts = data.key_concepts
+        history_entry.keywords = data.keywords
+        history_entry.central_notions = data.central_notions
+        history_entry.estimated_duration = data.estimated_duration
+        history_entry.target_audience = data.target_audience
+    else:
+        # Create new entry
+        history_entry = ModuleAnalysis(
+            user_id=current_user.id,
+            module_title=data.module_title,
+            module_summary=data.module_summary,
+            original_content=data.original_content,
+            learning_outcomes=outcomes_dict,
+            key_concepts=data.key_concepts,
+            keywords=data.keywords,
+            central_notions=data.central_notions,
+            estimated_duration=data.estimated_duration,
+            target_audience=data.target_audience,
+        )
+        session.add(history_entry)
+
     session.commit()
     session.refresh(history_entry)
 
@@ -304,7 +340,7 @@ async def list_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Get the module analysis history for the current user."""
+    """Get the module analysis history summary for the current user (deduplicated by title, latest first)."""
     statement = (
         select(ModuleAnalysis)
         .where(ModuleAnalysis.user_id == current_user.id)
@@ -312,28 +348,64 @@ async def list_analysis_history(
     )
     results = session.exec(statement).all()
 
+    seen_titles = set()
     response = []
     for entry in results:
-        # Deserialize JSON lists/dicts to Pydantic models
-        lo_list = [LearningOutcome(**lo) for lo in entry.learning_outcomes]
+        normalized_title = (entry.module_title or "").strip().lower()
+        if normalized_title in seen_titles:
+            continue
+        seen_titles.add(normalized_title)
+
+        lo_list = [LearningOutcome(**lo) for lo in (entry.learning_outcomes or [])]
         response.append(
             SavedAnalysisResponse(
                 id=entry.id,
                 user_id=entry.user_id,
                 module_title=entry.module_title,
                 module_summary=entry.module_summary,
-                original_content=entry.original_content,
+                original_content=None,  # Omit heavy raw document text in list for performance
                 learning_outcomes=lo_list,
-                key_concepts=entry.key_concepts,
-                keywords=entry.keywords,
-                central_notions=entry.central_notions,
+                key_concepts=entry.key_concepts or [],
+                keywords=entry.keywords or [],
+                central_notions=entry.central_notions or [],
                 estimated_duration=entry.estimated_duration,
                 target_audience=entry.target_audience,
-                quiz_data=entry.quiz_data,
+                quiz_data=None,  # Omit heavy quiz payload in list
                 created_at=entry.created_at,
             )
         )
     return response
+
+
+@router.get("/history/{analysis_id}", response_model=SavedAnalysisResponse)
+async def get_analysis_history_item(
+    analysis_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Get full details of a specific module analysis history item."""
+    entry = session.get(ModuleAnalysis, analysis_id)
+    if not entry or entry.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fiche module introuvable.",
+        )
+    lo_list = [LearningOutcome(**lo) for lo in (entry.learning_outcomes or [])]
+    return SavedAnalysisResponse(
+        id=entry.id,
+        user_id=entry.user_id,
+        module_title=entry.module_title,
+        module_summary=entry.module_summary,
+        original_content=entry.original_content,
+        learning_outcomes=lo_list,
+        key_concepts=entry.key_concepts or [],
+        keywords=entry.keywords or [],
+        central_notions=entry.central_notions or [],
+        estimated_duration=entry.estimated_duration,
+        target_audience=entry.target_audience,
+        quiz_data=entry.quiz_data,
+        created_at=entry.created_at,
+    )
 
 
 @router.delete("/history/{analysis_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -368,6 +440,7 @@ class GenerateQuizRequest(BaseModel):
     mode: str = "formatif"  # "compétitif" | "collaboratif" | "formatif"
     question_types: list[str] = ["qcm", "vrai_faux"]
     force: bool = False
+    model: str | None = None
 
 
 @router.post("/history/{analysis_id}/quiz")
@@ -407,7 +480,8 @@ async def generate_quiz(
             nb_questions=data.nb_questions,
             duree_par_question=data.duree_par_question,
             mode=data.mode,
-            question_types=data.question_types
+            question_types=data.question_types,
+            model=data.model,
         )
         
         # Save to DB for future requests

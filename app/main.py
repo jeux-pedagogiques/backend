@@ -13,6 +13,12 @@ from app.routers.dashboard_router import router as dashboard_router
 from app.routers.pitching_router import router as pitching_router
 from app.routers.flashcard_router import router as flashcard_router
 from app.routers.library_router import router as library_router
+from app.routers.share_router import router as share_router
+from app.routers.cas_etude_router import router as cas_etude_router
+from app.routers.mindmap_router import router as mindmap_router
+from app.routers.debat_router import router as debat_router
+from app.routers.negociation_router import router as negociation_router
+from app.routers.atelier_feedback_router import router as atelier_feedback_router
 from app.services.socket_service import socket_app
 
 # Import models to ensure they are registered in metadata
@@ -20,7 +26,11 @@ from app.services.socket_service import socket_app
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_db_and_tables()
+    from fastapi.concurrency import run_in_threadpool
+    try:
+        await run_in_threadpool(create_db_and_tables)
+    except Exception as e:
+        print(f"Warning: DB startup initialization error: {e}")
     yield
 
 
@@ -43,6 +53,13 @@ app.include_router(dashboard_router)
 app.include_router(pitching_router)
 app.include_router(flashcard_router)
 app.include_router(library_router)
+app.include_router(share_router)
+app.include_router(cas_etude_router)
+app.include_router(mindmap_router)
+app.include_router(debat_router)
+app.include_router(negociation_router)
+app.include_router(atelier_feedback_router)
+
 
 # Mount Socket.io ASGI application
 app.mount("/", socket_app)
