@@ -28,7 +28,7 @@ jobs:
           pip install pytest pytest-cov bandit pip-audit ruff
 
       - name: Code Quality & Style (Ruff)
-        run: ruff check app/ tests/
+        run: ruff check app/ tests/ --select E4,E7,E9,F
 
       - name: Run Backend Unit Tests (Pytest)
         run: pytest tests -v
