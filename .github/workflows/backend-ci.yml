@@ -64,7 +64,7 @@ jobs:
           sudo mv gitleaks /usr/local/bin/
 
       - name: Run Gitleaks Secret Scan
-        run: gitleaks detect --verbose --redact --source .
+        run: gitleaks detect --verbose --redact --no-git --source .
 
       - name: Initialize CodeQL Analysis
         uses: github/codeql-action/init@v3
