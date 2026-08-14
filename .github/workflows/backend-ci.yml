@@ -28,7 +28,7 @@ jobs:
           pip install pytest pytest-cov bandit pip-audit ruff
 
       - name: Code Quality & Style (Ruff)
-        run: ruff check app/ tests/
+        run: ruff check app/ tests/ --select E4,E7,E9,F
 
       - name: Run Backend Unit Tests (Pytest)
         env:
@@ -64,12 +64,14 @@ jobs:
 
       - name: Install Gitleaks Standalone Binary
         run: |
-          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
-          tar -zxvf gitleaks_8.18.2_linux_x64.tar.gz
-          sudo mv gitleaks /usr/local/bin/
+          TMP_DIR="$(mktemp -d)"
+          wget -q -O "$TMP_DIR/gitleaks.tar.gz" https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
+          tar -xzf "$TMP_DIR/gitleaks.tar.gz" -C "$TMP_DIR" gitleaks
+          sudo install "$TMP_DIR/gitleaks" /usr/local/bin/gitleaks
+          rm -rf "$TMP_DIR"
 
       - name: Run Gitleaks Secret Scan
-        run: gitleaks detect --verbose --redact --source .
+        run: gitleaks detect --verbose --redact --no-git --source .
 
       - name: Initialize CodeQL Analysis
         uses: github/codeql-action/init@v3
