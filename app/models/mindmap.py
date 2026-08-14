@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional, Any
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, Text, JSON
+from sqlalchemy import Column, JSON
 
 
 class MindMap(SQLModel, table=True):

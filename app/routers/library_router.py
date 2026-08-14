@@ -101,7 +101,7 @@ async def list_library(
                 )
 
         session.commit()
-    except Exception as e:
+    except Exception:
         pass
 
     # Base query

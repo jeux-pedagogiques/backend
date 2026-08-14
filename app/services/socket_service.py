@@ -1234,7 +1234,7 @@ async def on_negociation_launch(sid, data):
         participants = db.exec(
             select(QuizParticipant).where(
                 QuizParticipant.session_id == session_obj.id,
-                QuizParticipant.is_active == True
+                QuizParticipant.is_active
             )
         ).all()
 

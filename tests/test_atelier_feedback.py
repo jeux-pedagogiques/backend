@@ -50,7 +50,6 @@ async def test_generate_atelier_feedback_endpoint(mock_generate, client, test_mo
 async def test_socket_atelier_flow_and_anonymity(session: Session, test_module):
     from tests.conftest import engine as test_engine
     from sqlmodel import SQLModel
-    import app.models  # Ensures all models are registered in SQLModel.metadata
 
     SQLModel.metadata.create_all(test_engine)
 
@@ -68,7 +67,7 @@ async def test_socket_atelier_flow_and_anonymity(session: Session, test_module):
     session.refresh(atelier)
 
     # Patch socketio emit and Session to use fixture session
-    with patch("app.services.socket_service.sio.emit", new_callable=AsyncMock) as mock_emit, \
+    with patch("app.services.socket_service.sio.emit", new_callable=AsyncMock), \
          patch("app.services.socket_service.Session", return_value=session):
         # 2. Test atelier:launch
 

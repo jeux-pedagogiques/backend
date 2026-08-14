@@ -13,7 +13,7 @@ from app.models.user import User
 from app.models.game_share import GameShare, GameResult
 from app.models.quiz import Quiz
 from app.models.escape_room import EscapeRoom
-from app.models.flashcard import FlashcardSet, Flashcard
+from app.models.flashcard import FlashcardSet
 from app.models.pitching import PitchingSession
 from app.models.cas_etude import CasEtude
 from app.models.mindmap import MindMap
@@ -64,7 +64,7 @@ def create_share(
         raise HTTPException(400, f"Invalid game_type. Must be one of: {VALID_GAME_TYPES}")
 
     # Verify the game exists and belongs to the current user
-    game = _get_game_or_404(session, req.game_type, req.game_id, current_user.id)
+    _get_game_or_404(session, req.game_type, req.game_id, current_user.id)
 
     # Check if a share already exists for this game
     existing = session.exec(
@@ -72,7 +72,7 @@ def create_share(
             GameShare.game_type == req.game_type,
             GameShare.game_id == req.game_id,
             GameShare.user_id == current_user.id,
-            GameShare.is_active == True,
+            GameShare.is_active,
         )
     ).first()
 
@@ -115,7 +115,7 @@ def share_game_email(
             GameShare.game_type == req.game_type,
             GameShare.game_id == req.game_id,
             GameShare.user_id == current_user.id,
-            GameShare.is_active == True,
+            GameShare.is_active,
         )
     ).first()
 
@@ -341,7 +341,7 @@ class ClaimSubjectRequest(BaseModel):
 def get_shared_game(token: str, session: Session = Depends(get_session)):
     """Public — load game data for a shared token."""
     share = session.exec(
-        select(GameShare).where(GameShare.share_token == token, GameShare.is_active == True)
+        select(GameShare).where(GameShare.share_token == token, GameShare.is_active)
     ).first()
 
     if not share:
@@ -379,7 +379,7 @@ def claim_subject(
 ):
     """Public — student claims a subject in pitching challenge."""
     share = session.exec(
-        select(GameShare).where(GameShare.share_token == token, GameShare.is_active == True)
+        select(GameShare).where(GameShare.share_token == token, GameShare.is_active)
     ).first()
 
     if not share:
@@ -430,7 +430,7 @@ def submit_result(
 ):
     """Public — student submits game results."""
     share = session.exec(
-        select(GameShare).where(GameShare.share_token == token, GameShare.is_active == True)
+        select(GameShare).where(GameShare.share_token == token, GameShare.is_active)
     ).first()
 
     if not share:

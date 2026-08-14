@@ -1,6 +1,6 @@
 """REST Router for Cas d'Étude Gamifiée."""
 
-from typing import Optional, Any
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
