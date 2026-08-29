@@ -79,6 +79,95 @@ async def generate_atelier_feedback_endpoint(
     }
 
 
+@router.get("/history", response_model=list[dict[str, Any]])
+def get_atelier_history(
+    session: Session = Depends(get_session)
+):
+    """
+    GET list of past created Atelier Feedback sessions.
+    """
+    statement = select(AtelierFeedback).order_by(AtelierFeedback.created_at.desc())
+    ateliers = session.exec(statement).all()
+    results = []
+    for a in ateliers:
+        module_title = "Module"
+        key_concepts = []
+        learning_outcomes = []
+        if a.module_id:
+            mod = session.get(ModuleAnalysis, a.module_id)
+            if mod:
+                module_title = mod.module_title
+                key_concepts = mod.key_concepts or []
+                learning_outcomes = mod.learning_outcomes or []
+
+        results.append({
+            "id": a.id,
+            "module_id": a.module_id,
+            "module_title": module_title,
+            "titre": a.titre,
+            "criteres": a.criteres or [],
+            "criteres_count": len(a.criteres) if isinstance(a.criteres, list) else 0,
+            "key_concepts": key_concepts,
+            "learning_outcomes": learning_outcomes,
+            "structure_grille": a.structure_grille,
+            "anonyme": a.anonyme,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        })
+    return results
+
+
+@router.get("/detail/{id}", response_model=dict[str, Any])
+def get_atelier_detail(
+    id: int,
+    session: Session = Depends(get_session)
+):
+    """
+    GET single Atelier Feedback by ID.
+    """
+    atelier = session.get(AtelierFeedback, id)
+    if not atelier:
+        raise HTTPException(status_code=404, detail="Atelier non trouvé")
+
+    module_title = "Module"
+    key_concepts = []
+    learning_outcomes = []
+    if atelier.module_id:
+        mod = session.get(ModuleAnalysis, atelier.module_id)
+        if mod:
+            module_title = mod.module_title
+            key_concepts = mod.key_concepts or []
+            learning_outcomes = mod.learning_outcomes or []
+
+    return {
+        "id": atelier.id,
+        "module_id": atelier.module_id,
+        "module_title": module_title,
+        "titre": atelier.titre,
+        "criteres": atelier.criteres or [],
+        "key_concepts": key_concepts,
+        "learning_outcomes": learning_outcomes,
+        "structure_grille": atelier.structure_grille,
+        "anonyme": atelier.anonyme,
+        "created_at": atelier.created_at.isoformat() if atelier.created_at else None,
+    }
+
+
+@router.delete("/{id}")
+def delete_atelier(
+    id: int,
+    session: Session = Depends(get_session)
+):
+    """
+    DELETE an Atelier Feedback by ID.
+    """
+    atelier = session.get(AtelierFeedback, id)
+    if not atelier:
+        raise HTTPException(status_code=404, detail="Atelier non trouvé")
+    session.delete(atelier)
+    session.commit()
+    return {"status": "ok", "message": "Atelier supprimé avec succès"}
+
+
 @router.get("/{session_id}/results/{presentation_id}", response_model=dict[str, Any])
 def get_presentation_consolidated_results(
     session_id: int,

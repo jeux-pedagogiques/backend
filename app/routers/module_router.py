@@ -340,13 +340,18 @@ async def list_analysis_history(
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Get the module analysis history summary for the current user (deduplicated by title, latest first)."""
+    """Get the module analysis history summary (user's modules with fallback to all available scanned modules)."""
     statement = (
         select(ModuleAnalysis)
         .where(ModuleAnalysis.user_id == current_user.id)
         .order_by(ModuleAnalysis.created_at.desc())
     )
     results = session.exec(statement).all()
+
+    # If the user has no personal module analyses yet, allow access to all scanned modules in the database
+    if not results:
+        fallback_stmt = select(ModuleAnalysis).order_by(ModuleAnalysis.created_at.desc())
+        results = session.exec(fallback_stmt).all()
 
     seen_titles = set()
     response = []
