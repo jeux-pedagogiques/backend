@@ -201,29 +201,40 @@ def resend_verification_code(data: dict, session: Session = Depends(get_session)
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def register(data: UserRegister, session: Session = Depends(get_session)):
-    """Direct registration (kept for backwards compatibility/testing)."""
+    """Direct registration without email verification code."""
+    email_val = data.email.strip().lower()
+    username_val = data.username.strip()
+
     # Check if email already exists
-    existing_email = session.exec(select(User).where(User.email == data.email)).first()
+    existing_email = session.exec(select(User).where(User.email == email_val)).first()
     if existing_email:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A user with this email already exists",
+            detail="Un compte avec cette adresse email existe déjà",
         )
 
     # Check if username already exists
-    existing_username = session.exec(select(User).where(User.username == data.username)).first()
+    existing_username = session.exec(select(User).where(User.username == username_val)).first()
     if existing_username:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A user with this username already exists",
+            detail="Ce nom d'utilisateur est déjà utilisé",
         )
+
+    if len(data.password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le mot de passe doit comporter au moins 8 caractères",
+        )
+
+    user_role = data.role if data.role in ["prof", "admin", "student"] else "prof"
 
     # Create the user
     user = User(
-        username=data.username,
-        email=data.email,
+        username=username_val,
+        email=email_val,
         hashed_password=hash_password(data.password),
-        role=data.role,
+        role=user_role,
     )
     session.add(user)
     session.commit()
