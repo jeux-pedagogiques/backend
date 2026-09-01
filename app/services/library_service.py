@@ -14,6 +14,7 @@ from app.models.pitching import PitchingSession
 from app.models.quiz import Quiz
 from app.models.cas_etude import CasEtude
 from app.models.debat import Debat
+from app.models.storytelling import Storytelling
 from app.models.module_analysis import ModuleAnalysis
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ GAME_TYPE_MAP: dict[str, type] = {
     "quiz": Quiz,
     "cas_etude": CasEtude,
     "debat": Debat,
+    "storytelling": Storytelling,
 }
 
 
@@ -179,6 +181,22 @@ def duplicate_game(
             roles=copy.deepcopy(original.roles or []),
             questions_relance=copy.deepcopy(original.questions_relance or []),
             statut="en_attente",
+        )
+        session.add(dup)
+        session.flush()
+
+    elif game_type == "storytelling":
+        dup = Storytelling(
+            user_id=user_id,
+            module_id=new_module_id or original.module_id,
+            titre=f"{original.titre} (copie)",
+            contexte_depart=original.contexte_depart,
+            mots_cles_obligatoires=copy.deepcopy(original.mots_cles_obligatoires or []),
+            etapes_narratives=copy.deepcopy(original.etapes_narratives or []),
+            roles_narratifs=copy.deepcopy(original.roles_narratifs or []),
+            fiche_animateur=copy.deepcopy(original.fiche_animateur),
+            fiche_participant=copy.deepcopy(original.fiche_participant),
+            criteres_evaluation=copy.deepcopy(original.criteres_evaluation or []),
         )
         session.add(dup)
         session.flush()
@@ -348,6 +366,34 @@ async def regenerate_game(
         game.roles = new_data.get("roles", game.roles)
         game.questions_relance = new_data.get("questions_relance", game.questions_relance)
         game.statut = "en_attente"
+        session.add(game)
+
+    elif game_type == "storytelling":
+        from app.services.storytelling_service import generate_storytelling
+
+        outcomes_dict = []
+        for o in (learning_outcomes or []):
+            if isinstance(o, dict):
+                outcomes_dict.append(o)
+            else:
+                outcomes_dict.append({"id": getattr(o, "id", None), "description": str(o), "bloom_level": "creer"})
+
+        new_data = await generate_storytelling(
+            module_title=getattr(module, "module_title", "") if module else "",
+            learning_outcomes=outcomes_dict,
+            key_concepts=key_concepts,
+            keywords=keywords,
+            nb_etapes=len(game.etapes_narratives) if game.etapes_narratives else 4,
+            duree_minutes=20,
+        )
+        game.titre = new_data.get("titre", game.titre)
+        game.contexte_depart = new_data.get("contexte_depart", game.contexte_depart)
+        game.mots_cles_obligatoires = new_data.get("mots_cles_obligatoires", game.mots_cles_obligatoires)
+        game.etapes_narratives = new_data.get("etapes_narratives", game.etapes_narratives)
+        game.roles_narratifs = new_data.get("roles_narratifs", game.roles_narratifs)
+        game.fiche_animateur = new_data.get("fiche_animateur", game.fiche_animateur)
+        game.fiche_participant = new_data.get("fiche_participant", game.fiche_participant)
+        game.criteres_evaluation = new_data.get("criteres_evaluation", game.criteres_evaluation)
         session.add(game)
 
     else:

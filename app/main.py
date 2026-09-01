@@ -19,6 +19,7 @@ from app.routers.mindmap_router import router as mindmap_router
 from app.routers.debat_router import router as debat_router
 from app.routers.negociation_router import router as negociation_router
 from app.routers.atelier_feedback_router import router as atelier_feedback_router
+from app.routers.storytelling_router import router as storytelling_router
 from app.services.socket_service import socket_app
 
 # Import models to ensure they are registered in metadata
@@ -59,6 +60,7 @@ app.include_router(mindmap_router)
 app.include_router(debat_router)
 app.include_router(negociation_router)
 app.include_router(atelier_feedback_router)
+app.include_router(storytelling_router)
 
 
 # Mount Socket.io ASGI application

@@ -18,10 +18,11 @@ from app.models.pitching import PitchingSession
 from app.models.cas_etude import CasEtude
 from app.models.mindmap import MindMap
 from app.models.debat import Debat
+from app.models.storytelling import Storytelling
 
 router = APIRouter(prefix="/api/shares", tags=["shares"])
 
-VALID_GAME_TYPES = {"quiz", "escape_room", "flashcards", "pitching", "cas_etude", "mindmap", "debat"}
+VALID_GAME_TYPES = {"quiz", "escape_room", "flashcards", "pitching", "cas_etude", "mindmap", "debat", "storytelling"}
 
 
 # ─── Request / Response Schemas ──────────────────────────────────────
@@ -146,7 +147,8 @@ def share_game_email(
         "pitching": "Challenge Pitching",
         "cas_etude": "Étude de Cas",
         "mindmap": "Carte Mentale (Mind Map)",
-        "debat": "Débat Structuré"
+        "debat": "Débat Structuré",
+        "storytelling": "Storytelling Collaboratif"
     }
     type_label = game_type_labels.get(req.game_type, "Activité Pédagogique")
 
@@ -472,6 +474,7 @@ def _get_game_or_404(session: Session, game_type: str, game_id: int, user_id: in
         "cas_etude": (CasEtude, "user_id"),
         "mindmap": (MindMap, "user_id"),
         "debat": (Debat, "user_id"),
+        "storytelling": (Storytelling, "user_id"),
     }
     model_cls, owner_field = model_map[game_type]
     game = session.get(model_cls, game_id)
@@ -554,5 +557,19 @@ def _load_game_data(session: Session, game_type: str, game_id: int):
             "roles": debat.roles,
             "questions_relance": debat.questions_relance,
         }, debat.problematique or "Débat structuré"
+
+    elif game_type == "storytelling":
+        story = session.get(Storytelling, game_id)
+        if not story:
+            raise HTTPException(404, "Storytelling introuvable")
+        return {
+            "titre": story.titre,
+            "contexte_depart": story.contexte_depart,
+            "mots_cles_obligatoires": story.mots_cles_obligatoires,
+            "etapes_narratives": story.etapes_narratives,
+            "roles_narratifs": story.roles_narratifs,
+            "fiche_participant": story.fiche_participant,
+            "criteres_evaluation": story.criteres_evaluation,
+        }, story.titre
 
     raise HTTPException(400, "Unknown game type")

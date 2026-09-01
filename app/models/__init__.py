@@ -13,7 +13,4 @@ from app.models.mindmap import MindMap, MindMapNode  # noqa: F401
 from app.models.debat import Debat, ParticipantDebat, PriseDeParole, NoteObservateur  # noqa: F401
 from app.models.negociation import Negociation, GroupeNegociation, AssignationPersonnage, AccordFinal  # noqa: F401
 from app.models.atelier_feedback import AtelierFeedback, PresentationAtelier, FeedbackRecu  # noqa: F401
-
-
-
-
+from app.models.storytelling import Storytelling, StorytellingGroupe, StorytellingContribution, StorytellingHistoireFinale  # noqa: F401

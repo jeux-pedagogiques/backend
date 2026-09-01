@@ -10,6 +10,12 @@ from app.models.mindmap import MindMap, MindMapNode
 from app.models.debat import Debat, ParticipantDebat, PriseDeParole, NoteObservateur
 from app.models.negociation import Negociation, GroupeNegociation, AssignationPersonnage, AccordFinal
 from app.models.atelier_feedback import AtelierFeedback, PresentationAtelier, FeedbackRecu
+from app.models.storytelling import (
+    Storytelling,
+    StorytellingGroupe,
+    StorytellingContribution,
+    StorytellingHistoireFinale,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1747,5 +1753,164 @@ async def on_atelier_show_aggregated(sid, data):
         return {"status": "success", "aggregated": payload}
 
 
+# ---------------------------------------------------------------------------
+# Storytelling Collaboratif Socket Events
+# ---------------------------------------------------------------------------
+
+@sio.on("storytelling:launch")
+async def on_storytelling_launch(sid, data):
+    """Host launches a live Storytelling Collaboratif session."""
+    session_code = data.get("session_code")
+    storytelling_id = data.get("storytelling_id")
+
+    if not storytelling_id:
+        return {"status": "error", "message": "Missing storytelling_id"}
+
+    with Session(engine) as db:
+        story = db.get(Storytelling, storytelling_id)
+        if not story:
+            return {"status": "error", "message": "Storytelling scenario not found"}
+
+        payload = {
+            "storytelling_id": story.id,
+            "titre": story.titre,
+            "contexte_depart": story.contexte_depart,
+            "mots_cles_obligatoires": story.mots_cles_obligatoires or [],
+            "etapes_narratives": story.etapes_narratives or [],
+            "roles_narratifs": story.roles_narratifs or [],
+            "criteres_evaluation": story.criteres_evaluation or [],
+            "fiche_participant": story.fiche_participant,
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("storytelling:started", payload, room=room)
+        else:
+            await sio.emit("storytelling:started", payload)
+
+        logger.info(f"Storytelling {storytelling_id} launched in session {session_code}")
+        return {"status": "success", "storytelling": payload}
 
 
+@sio.on("storytelling:contribute")
+async def on_storytelling_contribute(sid, data):
+    """Participant contributes a paragraph / narrative segment to an arc step."""
+    session_code = data.get("session_code")
+    storytelling_id = data.get("storytelling_id")
+    groupe_id = data.get("groupe_id")
+    participant_id = data.get("participant_id") or sid
+    pseudo = data.get("pseudo") or "Étudiant"
+    etape_index = data.get("etape_index", 0)
+    texte = data.get("texte_contribution", "")
+    mots_cles_utilises = data.get("mots_cles_utilises", [])
+
+    if not storytelling_id or not texte:
+        return {"status": "error", "message": "Missing storytelling_id or texte_contribution"}
+
+    with Session(engine) as db:
+        story = db.get(Storytelling, storytelling_id)
+        if not story:
+            return {"status": "error", "message": "Storytelling not found"}
+
+        # Detect used keywords automatically if not provided
+        if not mots_cles_utilises and story.mots_cles_obligatoires:
+            lower_texte = texte.lower()
+            mots_cles_utilises = [
+                kw for kw in story.mots_cles_obligatoires
+                if kw.lower() in lower_texte
+            ]
+
+        contrib = StorytellingContribution(
+            storytelling_id=storytelling_id,
+            groupe_id=groupe_id,
+            participant_id=participant_id,
+            pseudo=pseudo,
+            etape_index=etape_index,
+            texte_contribution=texte,
+            mots_cles_utilises=mots_cles_utilises,
+        )
+        db.add(contrib)
+        db.commit()
+        db.refresh(contrib)
+
+        payload = {
+            "id": contrib.id,
+            "storytelling_id": contrib.storytelling_id,
+            "groupe_id": contrib.groupe_id,
+            "participant_id": contrib.participant_id,
+            "pseudo": contrib.pseudo,
+            "etape_index": contrib.etape_index,
+            "texte_contribution": contrib.texte_contribution,
+            "mots_cles_utilises": contrib.mots_cles_utilises,
+            "timestamp": contrib.timestamp.isoformat() if contrib.timestamp else None,
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("storytelling:contribution_added", payload, room=room)
+        else:
+            await sio.emit("storytelling:contribution_added", payload)
+
+        logger.info(f"Storytelling contribution added by {pseudo} for step {etape_index}")
+        return {"status": "success", "contribution": payload}
+
+
+@sio.on("storytelling:submit_story")
+async def on_storytelling_submit_story(sid, data):
+    """Team or participant submits the completed collective story."""
+    session_code = data.get("session_code")
+    storytelling_id = data.get("storytelling_id")
+    groupe_id = data.get("groupe_id")
+    nom_auteur = data.get("nom_auteur_ou_groupe") or "Équipe"
+    texte_complet = data.get("texte_complet", "")
+
+    if not storytelling_id or not texte_complet:
+        return {"status": "error", "message": "Missing storytelling_id or texte_complet"}
+
+    with Session(engine) as db:
+        histoire = StorytellingHistoireFinale(
+            storytelling_id=storytelling_id,
+            groupe_id=groupe_id,
+            nom_auteur_ou_groupe=nom_auteur,
+            texte_complet=texte_complet,
+        )
+        db.add(histoire)
+        db.commit()
+        db.refresh(histoire)
+
+        payload = {
+            "id": histoire.id,
+            "storytelling_id": histoire.storytelling_id,
+            "groupe_id": histoire.groupe_id,
+            "nom_auteur_ou_groupe": histoire.nom_auteur_ou_groupe,
+            "texte_complet": histoire.texte_complet,
+            "submitted_at": histoire.submitted_at.isoformat() if histoire.submitted_at else None,
+        }
+
+        if session_code:
+            room = f"session_{session_code}"
+            await sio.emit("storytelling:story_submitted", payload, room=room)
+        else:
+            await sio.emit("storytelling:story_submitted", payload)
+
+        return {"status": "success", "histoire": payload}
+
+
+@sio.on("storytelling:end")
+async def on_storytelling_end(sid, data):
+    """Host concludes the storytelling session and transitions to debriefing."""
+    session_code = data.get("session_code")
+    storytelling_id = data.get("storytelling_id")
+
+    payload = {
+        "storytelling_id": storytelling_id,
+        "ended": True,
+    }
+
+    if session_code:
+        room = f"session_{session_code}"
+        await sio.emit("storytelling:ended", payload, room=room)
+    else:
+        await sio.emit("storytelling:ended", payload)
+
+    return {"status": "success"}

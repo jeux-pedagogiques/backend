@@ -9,6 +9,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 # AI Model API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BAI_API_KEY = os.getenv("BAI_API_KEY")
+BAI_BASE_URL = os.getenv("BAI_BASE_URL", "https://api.b.ai/v1")
+BAI_MODEL = os.getenv("BAI_MODEL", "glm-5.3-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")

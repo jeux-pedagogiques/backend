@@ -25,6 +25,9 @@ DEFAULT_RETRY_DELAY = 55.0
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
+BAI_BASE_URL = os.getenv("BAI_BASE_URL", "https://api.b.ai/v1")
+BAI_DEFAULT_MODEL = os.getenv("BAI_MODEL", "glm-5.3-flash")
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o"
 
@@ -40,6 +43,106 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-flash-latest",
     "gemini-3.5-flash-lite"
 ]
+
+
+# ── BAI helpers ────────────────────────────────────────────────
+
+
+def _bai_headers() -> dict:
+    api_key = os.getenv("BAI_API_KEY")
+    if not api_key:
+        return {}
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+
+def _gemini_to_bai_payload(payload: dict, target_model: str | None = None) -> dict:
+    """Convert a Gemini-style payload to BAI (OpenAI-compatible) format."""
+    contents = payload.get("contents", [])
+    messages = []
+    system_content = None
+
+    for c in contents:
+        role = c.get("role", "user")
+        parts = c.get("parts", [])
+        text_parts = [p.get("text", "") for p in parts if "text" in p]
+        text = "\n".join(text_parts)
+
+        if role == "user" or not system_content:
+            messages.append({"role": "user", "content": text})
+        else:
+            system_content = text
+
+    generation_config = payload.get("generationConfig", {})
+    requested_tokens = generation_config.get("maxOutputTokens", 8192)
+    max_tokens = max(requested_tokens, 8192)
+    temperature = generation_config.get("temperature", 0.3)
+    model = target_model or os.getenv("BAI_MODEL", BAI_DEFAULT_MODEL)
+
+    bai_payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    if system_content:
+        bai_payload["messages"] = [
+            {"role": "system", "content": system_content},
+            *bai_payload["messages"],
+        ]
+
+    response_schema = generation_config.get("responseSchema")
+    response_mime = generation_config.get("responseMimeType")
+    if response_schema and response_mime == "application/json":
+        bai_payload["response_format"] = {"type": "json_object"}
+
+    return bai_payload
+
+
+async def _try_bai(payload: dict, timeout: float, model: str | None = None) -> dict | None:
+    """Try calling BAI API (https://api.b.ai/v1). Returns parsed JSON or None on failure."""
+    headers = _bai_headers()
+    if not headers:
+        logger.info("BAI_API_KEY not configured, skipping BAI.")
+        return None
+
+    target_model = model or os.getenv("BAI_MODEL", BAI_DEFAULT_MODEL)
+    bai_payload = _gemini_to_bai_payload(payload, target_model=target_model)
+    url = f"{BAI_BASE_URL}/chat/completions"
+
+    client_timeout = httpx.Timeout(timeout, connect=15.0)
+    for attempt in range(1, MAX_RETRIES_PER_MODEL + 1):
+        try:
+            async with httpx.AsyncClient(timeout=client_timeout) as client:
+                response = await client.post(url, json=bai_payload, headers=headers)
+        except Exception as e:
+            logger.warning("BAI request failed (attempt %d/%d): %s", attempt, MAX_RETRIES_PER_MODEL, e)
+            if attempt < MAX_RETRIES_PER_MODEL:
+                await asyncio.sleep(1.0)
+                continue
+            return None
+
+        if response.status_code in (400, 402, 403, 429):
+            logger.warning("BAI status %d: %s. Skipping to fallback.", response.status_code, response.text[:150])
+            return None
+        elif response.status_code != 200:
+            logger.warning("BAI returned %d: %s, falling back.", response.status_code, response.text[:200])
+            return None
+
+        try:
+            data = response.json()
+            choice = data["choices"][0]
+            msg = choice.get("message", {})
+            content = msg.get("content") or msg.get("reasoning_content") or ""
+            return {"candidates": [{"content": {"parts": [{"text": content}]}}]}
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            logger.warning("BAI unexpected response format: %s", e)
+            return None
+
+    return None
 
 
 # ── Groq helpers ───────────────────────────────────────────────
@@ -501,12 +604,41 @@ async def _try_github_models(payload: dict, timeout: float, model: str | None = 
 
 
 async def _call_gemini_api(payload: dict, timeout: float = 120.0, requested_model: str | None = None) -> dict:
-    """Send a request directly to Google Gemini API with fallback models."""
+    """Send a request directly to requested AI model or Google Gemini API with fallback models."""
     if requested_model and requested_model != "auto":
         req_clean = requested_model.strip()
         logger.info("User requested explicit AI model: %s", req_clean)
-        
-        if req_clean.startswith("gemini/"):
+
+        if req_clean.startswith("bai/"):
+            model_name = req_clean.split("bai/", 1)[1]
+            res = await _try_bai(payload, timeout, model=model_name)
+            if res is not None:
+                logger.info("Successfully used explicit BAI model: %s", model_name)
+                return res
+        elif req_clean in ("glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "qwen3.8-flash", "mimo-v2.5", "hy3"):
+            res = await _try_bai(payload, timeout, model=req_clean)
+            if res is not None:
+                logger.info("Successfully used explicit BAI model: %s", req_clean)
+                return res
+        elif req_clean.startswith("groq/"):
+            model_name = req_clean.split("groq/", 1)[1]
+            res = await _try_groq(payload, timeout, model=model_name)
+            if res is not None:
+                logger.info("Successfully used explicit Groq model: %s", model_name)
+                return res
+        elif req_clean.startswith("github/"):
+            model_name = req_clean.split("github/", 1)[1]
+            res = await _try_github_models(payload, timeout, model=model_name)
+            if res is not None:
+                logger.info("Successfully used explicit GitHub model: %s", model_name)
+                return res
+        elif req_clean.startswith("openrouter/"):
+            model_name = req_clean.split("openrouter/", 1)[1]
+            res = await _try_openrouter(payload, timeout, model=model_name)
+            if res is not None:
+                logger.info("Successfully used explicit OpenRouter model: %s", model_name)
+                return res
+        elif req_clean.startswith("gemini/"):
             model_id = req_clean.split("gemini/", 1)[1]
             api_key, _, _ = get_gemini_config()
             if api_key:
@@ -530,6 +662,11 @@ async def _call_gemini_api(payload: dict, timeout: float = 120.0, requested_mode
         logger.warning("Gemini API call failed (%s). Checking secondary fallbacks...", gem_err)
 
     # 2. Fallbacks if Gemini API is unreachable
+    result = await _try_bai(payload, timeout)
+    if result is not None:
+        logger.info("Successfully used BAI fallback")
+        return result
+
     result = await _try_groq(payload, timeout)
     if result is not None:
         logger.info("Successfully used Groq fallback")
@@ -545,7 +682,7 @@ async def _call_gemini_api(payload: dict, timeout: float = 120.0, requested_mode
         logger.info("Successfully used OpenRouter fallback")
         return result
 
-    raise RuntimeError("Toutes les requêtes d'IA (Google Gemini API) ont échoué.")
+    raise RuntimeError("Toutes les requêtes d'IA (Google Gemini, BAI, Groq, OpenRouter) ont échoué.")
 
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -596,6 +733,7 @@ def has_any_ai_key() -> bool:
     load_dotenv(override=True)
     return bool(
         os.getenv("GEMINI_API_KEY") or
+        os.getenv("BAI_API_KEY") or
         os.getenv("OPENROUTER_API_KEY") or
         os.getenv("GROQ_API_KEY") or
         os.getenv("GITHUB_MODELS_API_KEY")
