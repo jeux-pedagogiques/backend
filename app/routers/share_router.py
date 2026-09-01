@@ -131,7 +131,7 @@ def share_game_email(
         session.refresh(existing_share)
 
     base_url = req.frontend_url.rstrip("/") if req.frontend_url else "http://localhost:4200"
-    join_link = f"{base_url}/play/{req.game_type}/{existing_share.share_token}"
+    join_link = f"{base_url}/#/play/{req.game_type}/{existing_share.share_token}" if "/#" not in base_url else f"{base_url}/play/{req.game_type}/{existing_share.share_token}"
 
     title = getattr(game, "titre", None) or getattr(game, "title", None) or getattr(game, "name", None) or "Jeu ESPRIT"
     creator_name = (

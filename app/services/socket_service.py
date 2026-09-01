@@ -96,7 +96,7 @@ async def on_session_create(sid, data):
                     "status": "success",
                     "code_session": code_session,
                     "session_id": existing.id,
-                    "qr_code_data": f"/live-session?room={code_session}"
+                    "qr_code_data": f"/#/live-session?room={code_session}"
                 }
         else:
             # Generate a unique 6-digit code session
@@ -130,7 +130,7 @@ async def on_session_create(sid, data):
             "status": "success",
             "code_session": code_session,
             "session_id": quiz_session.id,
-            "qr_code_data": f"/live-session?room={code_session}" # Client can render this as QR Code
+            "qr_code_data": f"/#/live-session?room={code_session}" # Client can render this as QR Code
         }
 
 

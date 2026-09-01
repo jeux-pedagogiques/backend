@@ -238,7 +238,7 @@ def share_scheduled_meeting_email(
     )
 
     base_url = data.frontend_url.rstrip("/") if data.frontend_url else "http://localhost:4200"
-    join_link = f"{base_url}/live-session?room={meeting.room_id}"
+    join_link = f"{base_url}/#/live-session?room={meeting.room_id}" if "/#" not in base_url else f"{base_url}/live-session?room={meeting.room_id}"
     formatted_date = meeting.scheduled_time.strftime("%d/%m/%Y à %H:%M")
 
     subject = f"Invitation : Séance en direct ESPRIT - {meeting.title}"
