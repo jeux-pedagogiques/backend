@@ -63,10 +63,28 @@ app.include_router(atelier_feedback_router)
 app.include_router(storytelling_router)
 
 
-# Mount Socket.io ASGI application
-app.mount("/", socket_app)
-
-
 @app.get("/")
+@app.head("/")
 def root():
-    return {"status": "API is running"}
+    return {
+        "status": "ok",
+        "service": "artisan-jeux-pedagogiques-backend",
+        "message": "Backend API is active and running smoothly."
+    }
+
+
+@app.get("/health")
+@app.head("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/health")
+@app.head("/api/health")
+def api_health():
+    return {"status": "ok"}
+
+
+# Mount Socket.io ASGI application for real-time multiplayer sessions
+app.mount("/socket.io", socket_app)
+app.mount("/", socket_app)
