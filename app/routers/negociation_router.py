@@ -74,6 +74,23 @@ async def create_negociation(
     db.commit()
     db.refresh(negociation)
 
+    # Register in unified library
+    try:
+        from app.services.library_service import register_library_item
+        register_library_item(
+            session=db,
+            user_id=current_user.id,
+            game_type="negociation",
+            game_id=negociation.id,
+            module_id=negociation.module_id,
+            titre=negociation.titre,
+            niveaux_bloom=["analyser", "evaluer"],
+            concepts_cles=analysis.key_concepts or []
+        )
+        db.commit()
+    except Exception:
+        pass
+
     return {
         "id": negociation.id,
         "module_id": negociation.module_id,

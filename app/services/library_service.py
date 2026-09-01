@@ -17,6 +17,7 @@ from app.models.debat import Debat
 from app.models.storytelling import Storytelling
 from app.models.mindmap import MindMap
 from app.models.atelier_feedback import AtelierFeedback
+from app.models.negociation import Negociation
 from app.models.module_analysis import ModuleAnalysis
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ GAME_TYPE_MAP: dict[str, type] = {
     "storytelling": Storytelling,
     "mindmap": MindMap,
     "atelier_feedback": AtelierFeedback,
+    "negociation": Negociation,
 }
 
 
@@ -92,6 +94,7 @@ def _get_title_field(game_type: str, game) -> str:
         "storytelling": "titre",
         "mindmap": "concept_central",
         "atelier_feedback": "titre",
+        "negociation": "titre",
     }
     return getattr(game, title_map.get(game_type, "titre"), getattr(game, "concept_central", "Sans titre"))
 

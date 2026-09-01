@@ -46,12 +46,21 @@ async def list_library(
 ):
     """List library items with combined filters, FTS and pagination."""
 
-    # Auto-sync missing CasEtude & Quiz items into LibraryItem
+    # Auto-sync missing items across all game types into LibraryItem
     try:
         from app.models.cas_etude import CasEtude
         from app.models.quiz import Quiz
+        from app.models.debat import Debat
+        from app.models.storytelling import Storytelling
+        from app.models.mindmap import MindMap
+        from app.models.negociation import Negociation
+        from app.models.atelier_feedback import AtelierFeedback
+        from app.models.flashcard import FlashcardSet
+        from app.models.escape_room import EscapeRoom
+        from app.models.pitching import PitchingSession
         from app.services.library_service import register_library_item
 
+        # 1. Cas d'étude
         all_cases = session.exec(select(CasEtude).where(CasEtude.user_id == current_user.id)).all()
         for cas in all_cases:
             existing = session.exec(
@@ -73,6 +82,7 @@ async def list_library(
                     concepts_cles=[]
                 )
 
+        # 2. Quizzes
         all_quizzes = session.exec(select(Quiz).where(Quiz.user_id == current_user.id)).all()
         for quiz in all_quizzes:
             existing = session.exec(
@@ -99,6 +109,184 @@ async def list_library(
                     niveaux_bloom=niveaux,
                     concepts_cles=module.key_concepts if module and module.key_concepts else []
                 )
+
+        # 3. Débats
+        all_debats = session.exec(select(Debat).where(Debat.user_id == current_user.id)).all()
+        for d in all_debats:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "debat",
+                    LibraryItem.game_id == d.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="debat",
+                    game_id=d.id,
+                    module_id=d.module_id,
+                    titre=d.problematique or "Débat Structuré",
+                    niveaux_bloom=["analyser", "evaluer"],
+                    concepts_cles=[]
+                )
+
+        # 4. Storytellings
+        all_stories = session.exec(select(Storytelling).where(Storytelling.user_id == current_user.id)).all()
+        for s in all_stories:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "storytelling",
+                    LibraryItem.game_id == s.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="storytelling",
+                    game_id=s.id,
+                    module_id=s.module_id,
+                    titre=s.titre,
+                    niveaux_bloom=["creer", "appliquer"],
+                    concepts_cles=s.mots_cles_obligatoires or []
+                )
+
+        # 5. Mindmaps
+        all_mindmaps = session.exec(select(MindMap).where(MindMap.user_id == current_user.id)).all()
+        for m in all_mindmaps:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "mindmap",
+                    LibraryItem.game_id == m.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="mindmap",
+                    game_id=m.id,
+                    module_id=m.module_id,
+                    titre=f"Mind Map : {m.concept_central}",
+                    niveaux_bloom=["comprendre", "analyser"],
+                    concepts_cles=[]
+                )
+
+        # 6. Négociations
+        all_negos = session.exec(select(Negociation).where(Negociation.user_id == current_user.id)).all()
+        for n in all_negos:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "negociation",
+                    LibraryItem.game_id == n.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="negociation",
+                    game_id=n.id,
+                    module_id=n.module_id,
+                    titre=n.titre,
+                    niveaux_bloom=["analyser", "evaluer"],
+                    concepts_cles=[]
+                )
+
+        # 7. Flashcards
+        all_flashcards = session.exec(select(FlashcardSet).where(FlashcardSet.user_id == current_user.id)).all()
+        for fc in all_flashcards:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "flashcards",
+                    LibraryItem.game_id == fc.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="flashcards",
+                    game_id=fc.id,
+                    module_id=fc.module_id,
+                    titre=fc.titre,
+                    niveaux_bloom=["memoriser", "comprendre"],
+                    concepts_cles=[]
+                )
+
+        # 8. Escape Rooms
+        all_escapes = session.exec(select(EscapeRoom).where(EscapeRoom.prof_id == current_user.id)).all()
+        for er in all_escapes:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "escape_room",
+                    LibraryItem.game_id == er.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="escape_room",
+                    game_id=er.id,
+                    module_id=er.analysis_id,
+                    titre=er.titre_escape_room or "Escape Room",
+                    niveaux_bloom=["analyser", "appliquer"],
+                    concepts_cles=[]
+                )
+
+        # 9. Pitching Sessions
+        all_pitching = session.exec(select(PitchingSession).where(PitchingSession.user_id == current_user.id)).all()
+        for ps in all_pitching:
+            existing = session.exec(
+                select(LibraryItem).where(
+                    LibraryItem.game_type == "pitching",
+                    LibraryItem.game_id == ps.id,
+                    LibraryItem.user_id == current_user.id
+                )
+            ).first()
+            if not existing:
+                register_library_item(
+                    session=session,
+                    user_id=current_user.id,
+                    game_type="pitching",
+                    game_id=ps.id,
+                    module_id=ps.module_id,
+                    titre=ps.titre or "Pitching Challenge",
+                    niveaux_bloom=["evaluer", "creer"],
+                    concepts_cles=[]
+                )
+
+        # 10. Atelier Feedback
+        all_ateliers = session.exec(select(AtelierFeedback)).all()
+        for af in all_ateliers:
+            mod = session.get(ModuleAnalysis, af.module_id) if af.module_id else None
+            if mod and mod.user_id == current_user.id:
+                existing = session.exec(
+                    select(LibraryItem).where(
+                        LibraryItem.game_type == "atelier_feedback",
+                        LibraryItem.game_id == af.id,
+                        LibraryItem.user_id == current_user.id
+                    )
+                ).first()
+                if not existing:
+                    register_library_item(
+                        session=session,
+                        user_id=current_user.id,
+                        game_type="atelier_feedback",
+                        game_id=af.id,
+                        module_id=af.module_id,
+                        titre=af.titre,
+                        niveaux_bloom=["evaluer", "creer"],
+                        concepts_cles=mod.key_concepts if mod and mod.key_concepts else []
+                    )
 
         session.commit()
     except Exception:
@@ -215,7 +403,8 @@ async def get_game_detail(
 
     # Build a response dict from the game model
     data = {}
-    for key in game.__fields__:
+    fields = getattr(game, "model_fields", getattr(game, "__fields__", {}))
+    for key in fields:
         val = getattr(game, key)
         data[key] = val
 
@@ -245,6 +434,34 @@ async def get_game_detail(
             for n in nodes
         ]
         data["titre"] = f"Mind Map : {game.concept_central}"
+        data["branches_suggerees"] = game.branches_suggerees or []
+    elif game_type == "debat":
+        data["titre"] = game.problematique or "Débat Structuré"
+        data["problematique"] = game.problematique
+        data["camp_pour"] = game.camp_pour or []
+        data["camp_contre"] = game.camp_contre or []
+        data["roles"] = game.roles or []
+        data["questions_relance"] = game.questions_relance or []
+        data["synthese"] = game.synthese
+    elif game_type == "storytelling":
+        data["titre"] = game.titre or "Storytelling Collaboratif"
+        data["contexte_depart"] = game.contexte_depart
+        data["mots_cles_obligatoires"] = game.mots_cles_obligatoires or []
+        data["etapes_narratives"] = game.etapes_narratives or []
+        data["roles_narratifs"] = game.roles_narratifs or []
+        data["fiche_animateur"] = game.fiche_animateur
+        data["fiche_participant"] = game.fiche_participant
+        data["criteres_evaluation"] = game.criteres_evaluation or []
+    elif game_type == "negociation":
+        data["titre"] = game.titre or "Simulation de Négociation"
+        data["contexte_scenario"] = game.contexte_scenario
+        data["personnages"] = game.personnages or []
+        data["points_passage"] = game.points_passage or []
+        data["criteres_debriefing"] = game.criteres_debriefing or []
+    elif game_type == "atelier_feedback":
+        data["titre"] = game.titre or "Atelier Feedback Pair"
+        data["criteres"] = game.criteres or []
+        data["structure_grille"] = game.structure_grille or {}
 
     # Add module info
     module_id = game.analysis_id if game_type == "escape_room" else getattr(game, "module_id", None)

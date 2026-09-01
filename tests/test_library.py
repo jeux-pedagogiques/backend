@@ -95,3 +95,54 @@ def test_archive_library_item_endpoint(client, session: Session, test_user, test
     # Check that item is present when requested archived=True
     res_archived = client.get("/api/library?archived=true")
     assert res_archived.json()["total"] == 1
+
+
+def test_get_debat_and_storytelling_detail(client, session: Session, test_user, test_module):
+    from app.models.debat import Debat
+    from app.models.storytelling import Storytelling
+
+    debat = Debat(
+        user_id=test_user.id,
+        module_id=test_module.id,
+        problematique="L'IA va-t-elle remplacer les développeurs ?",
+        camp_pour=["Productivité x10", "Automatisation"],
+        camp_contre=["Créativité humaine", "Bugs complexes"],
+        roles=[{"nom_role": "Avocat IA", "description": "Défendre l'adoption"}]
+    )
+    session.add(debat)
+
+    story = Storytelling(
+        user_id=test_user.id,
+        module_id=test_module.id,
+        titre="The Nomad's Dilemma",
+        contexte_depart="Une équipe distribuée face à un bug critique.",
+        mots_cles_obligatoires=["Docker", "Microservices"],
+        etapes_narratives=[{"numero_etape": 1, "titre": "Découverte", "consigne": "Raconter le premier incident."}],
+        roles_narratifs=[{"nom_role": "Lead Dev", "mission": "Coordonner l'équipe"}]
+    )
+    session.add(story)
+    session.commit()
+    session.refresh(debat)
+    session.refresh(story)
+
+    # Test auto-sync on list
+    res_list = client.get("/api/library")
+    assert res_list.status_code == 200
+    types = [i["game_type"] for i in res_list.json()["items"]]
+    assert "debat" in types
+    assert "storytelling" in types
+
+    # Test detail Debat
+    res_debat = client.get(f"/api/library/debat/{debat.id}")
+    assert res_debat.status_code == 200
+    d_data = res_debat.json()
+    assert d_data["problematique"] == "L'IA va-t-elle remplacer les développeurs ?"
+    assert len(d_data["camp_pour"]) == 2
+
+    # Test detail Storytelling
+    res_story = client.get(f"/api/library/storytelling/{story.id}")
+    assert res_story.status_code == 200
+    s_data = res_story.json()
+    assert s_data["titre"] == "The Nomad's Dilemma"
+    assert len(s_data["etapes_narratives"]) == 1
+

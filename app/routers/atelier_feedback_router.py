@@ -68,6 +68,24 @@ async def generate_atelier_feedback_endpoint(
     session.commit()
     session.refresh(atelier)
 
+    # Register in unified library
+    if module.user_id:
+        try:
+            from app.services.library_service import register_library_item
+            register_library_item(
+                session=session,
+                user_id=module.user_id,
+                game_type="atelier_feedback",
+                game_id=atelier.id,
+                module_id=atelier.module_id,
+                titre=atelier.titre,
+                niveaux_bloom=["evaluer", "creer"],
+                concepts_cles=module.key_concepts or []
+            )
+            session.commit()
+        except Exception:
+            pass
+
     return {
         "id": atelier.id,
         "module_id": atelier.module_id,
