@@ -90,6 +90,53 @@ async def generate_mindmap_endpoint(
     }
 
 
+@router.get("/history", response_model=list[dict])
+def get_mindmap_history(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """List all generated Mind Maps for current user or global."""
+    query = (
+        select(MindMap, ModuleAnalysis.module_title)
+        .outerjoin(ModuleAnalysis, MindMap.module_id == ModuleAnalysis.id)
+        .order_by(MindMap.created_at.desc())
+    )
+    results = session.exec(query).all()
+
+    items = []
+    for mindmap, mod_title in results:
+        items.append({
+            "id": mindmap.id,
+            "module_id": mindmap.module_id,
+            "module_title": mod_title or "Module de cours",
+            "concept_central": mindmap.concept_central,
+            "branches_suggerees": mindmap.branches_suggerees or [],
+            "created_at": mindmap.created_at.isoformat() if mindmap.created_at else None
+        })
+    return items
+
+
+@router.delete("/{id}")
+def delete_mindmap(
+    id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a Mind Map and its nodes."""
+    mindmap = session.get(MindMap, id)
+    if not mindmap:
+        raise HTTPException(status_code=404, detail="Mind Map non trouvée")
+    
+    # Delete associated nodes first
+    nodes = session.exec(select(MindMapNode).where(MindMapNode.mindmap_id == id)).all()
+    for n in nodes:
+        session.delete(n)
+
+    session.delete(mindmap)
+    session.commit()
+    return {"message": "Mind Map supprimée avec succès"}
+
+
 @router.get("/{id}/export")
 def export_mindmap(
     id: int,
