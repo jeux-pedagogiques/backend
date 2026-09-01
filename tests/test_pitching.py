@@ -68,3 +68,56 @@ def test_confirm_pitching_challenge(client, session: Session, test_user, test_mo
     ).first()
     assert lib_item is not None
     assert lib_item.titre == "Challenge Confirmé Microservices"
+
+
+import pytest
+from unittest.mock import AsyncMock
+from app.services.pitching_challenge_service import generate_pitching_challenge
+
+
+@pytest.mark.asyncio
+@patch("app.services.pitching_challenge_service._call_gemini_api")
+@patch("app.services.pitching_challenge_service.has_any_ai_key", return_value=True)
+async def test_generate_pitching_challenge_service_resilience(mock_key, mock_call):
+    # Test handling markdown fenced JSON with surrounding text and trailing commas
+    raw_ai_text = """
+    Voici le résultat demandé :
+    ```json
+    {
+        "titre_challenge": "Pitch Docker & K8s",
+        "sujet_principal": "Pourquoi conteneuriser votre SI ?",
+        "sujets_par_equipe": ["Équipe 1 : Sécurité", "Équipe 2 : Scalabilité"],
+        "aa_cibles": ["Comprendre la conteneurisation"],
+        "criteres_vote": [
+            {"critere": "Impact", "description": "Impact sur l'audience"},
+        ],
+        "grille_feedback": {
+            "points_positifs": "Clarté",
+            "axes_amelioration": "Exemples",
+            "note_synthese": "Très bon",
+        },
+        "questions_debriefing": ["Comment isoler les conteneurs ?"],
+        "fiche_animateur": "Animer...",
+        "fiche_participant": "Participer...",
+    }
+    ```
+    Fin du document.
+    """
+    mock_call.return_value = {
+        "candidates": [{"content": {"parts": [{"text": raw_ai_text}]}}]
+    }
+
+    res = await generate_pitching_challenge(
+        learning_outcomes=[{"id": 1, "description": "Conteneurs", "bloom_level": "analyser"}],
+        key_concepts=["Docker", "Kubernetes"],
+        keywords=["DevOps"],
+        nb_equipes=2,
+        duree_preparation=10,
+        duree_pitch=3,
+        duree_feedback=5,
+    )
+
+    assert res["titre_challenge"] == "Pitch Docker & K8s"
+    assert len(res["sujets_par_equipe"]) == 2
+    assert res["criteres_vote"][0]["critere"] == "Impact"
+

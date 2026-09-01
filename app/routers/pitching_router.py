@@ -85,9 +85,38 @@ async def generate_challenge(
             detail="Ce module n'a pas d'acquis d'apprentissage. Veuillez d'abord analyser une fiche module."
         )
 
+    outcomes = module.learning_outcomes
+    if isinstance(outcomes, str):
+        try:
+            import json
+            outcomes = json.loads(outcomes)
+        except Exception:
+            outcomes = [{"description": outcomes, "bloom_level": "evaluer"}]
+
+    outcomes_dict = []
+    for o in (outcomes or []):
+        if isinstance(o, dict):
+            outcomes_dict.append({
+                "id": o.get("id", ""),
+                "description": o.get("description", str(o)),
+                "bloom_level": o.get("bloom_level", "evaluer")
+            })
+        elif isinstance(o, str):
+            outcomes_dict.append({
+                "id": "",
+                "description": o,
+                "bloom_level": "evaluer"
+            })
+        else:
+            outcomes_dict.append({
+                "id": getattr(o, "id", ""),
+                "description": getattr(o, "description", str(o)),
+                "bloom_level": getattr(o, "bloom_level", "evaluer")
+            })
+
     try:
         result = await generate_pitching_challenge(
-            learning_outcomes=module.learning_outcomes,
+            learning_outcomes=outcomes_dict,
             key_concepts=module.key_concepts or [],
             keywords=module.keywords or [],
             nb_equipes=data.nb_equipes,
@@ -97,6 +126,8 @@ async def generate_challenge(
             model=data.model,
         )
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Erreur lors de la génération du pitching : %s", e)
         raise HTTPException(status_code=500, detail=f"Erreur lors de la génération du pitching : {str(e)}")
 
     return {
@@ -135,11 +166,14 @@ async def confirm_challenge(
     session.flush()
 
     # Register in unified library
-    niveaux = list({
-        lo.get("bloom_level", "")
-        for lo in (module.learning_outcomes or [])
-        if lo.get("bloom_level")
-    })
+    niveaux = []
+    for lo in (module.learning_outcomes or []):
+        if isinstance(lo, dict) and lo.get("bloom_level"):
+            niveaux.append(lo["bloom_level"])
+        elif hasattr(lo, "bloom_level") and getattr(lo, "bloom_level"):
+            niveaux.append(getattr(lo, "bloom_level"))
+    niveaux = list(set(niveaux))
+
     register_library_item(
         session,
         user_id=current_user.id,
@@ -186,11 +220,12 @@ def create_session(
         module = session.get(ModuleAnalysis, data.module_id)
         if module:
             concepts = module.key_concepts or []
-            niveaux = list({
-                lo.get("bloom_level", "")
-                for lo in (module.learning_outcomes or [])
-                if lo.get("bloom_level")
-            })
+            for lo in (module.learning_outcomes or []):
+                if isinstance(lo, dict) and lo.get("bloom_level"):
+                    niveaux.append(lo["bloom_level"])
+                elif hasattr(lo, "bloom_level") and getattr(lo, "bloom_level"):
+                    niveaux.append(getattr(lo, "bloom_level"))
+            niveaux = list(set(niveaux))
     register_library_item(
         session,
         user_id=current_user.id,

@@ -98,6 +98,10 @@ def _gemini_to_bai_payload(payload: dict, target_model: str | None = None) -> di
     response_mime = generation_config.get("responseMimeType")
     if response_schema and response_mime == "application/json":
         bai_payload["response_format"] = {"type": "json_object"}
+        schema_str = json.dumps(response_schema, ensure_ascii=False, indent=2)
+        schema_instruction = f"\n\nIMPORTANT: Tu DOIS répondre strictement sous forme d'un objet JSON valide respectant ce schéma JSON :\n{schema_str}"
+        if bai_payload["messages"]:
+            bai_payload["messages"][-1]["content"] += schema_instruction
 
     return bai_payload
 
@@ -198,6 +202,10 @@ def _gemini_to_groq_payload(payload: dict, target_model: str | None = None) -> d
     response_mime = generation_config.get("responseMimeType")
     if response_schema and response_mime == "application/json":
         groq_payload["response_format"] = {"type": "json_object"}
+        schema_str = json.dumps(response_schema, ensure_ascii=False, indent=2)
+        schema_instruction = f"\n\nIMPORTANT: Tu DOIS répondre strictement sous forme d'un objet JSON valide respectant ce schéma JSON :\n{schema_str}"
+        if groq_payload["messages"]:
+            groq_payload["messages"][-1]["content"] += schema_instruction
 
     return groq_payload
 
@@ -296,6 +304,10 @@ def _gemini_to_openrouter_payload(payload: dict, target_model: str | None = None
     response_mime = generation_config.get("responseMimeType")
     if response_schema and response_mime == "application/json":
         or_payload["response_format"] = {"type": "json_object"}
+        schema_str = json.dumps(response_schema, ensure_ascii=False, indent=2)
+        schema_instruction = f"\n\nIMPORTANT: Tu DOIS répondre strictement sous forme d'un objet JSON valide respectant ce schéma JSON :\n{schema_str}"
+        if or_payload["messages"]:
+            or_payload["messages"][-1]["content"] += schema_instruction
 
     return or_payload
 
