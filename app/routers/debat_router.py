@@ -57,7 +57,7 @@ async def generate_debat_endpoint(
 ):
     """Generate a new structured debate using AI based on a module analysis."""
     module = session.get(ModuleAnalysis, req.module_id)
-    if not module or module.user_id != current_user.id:
+    if not module:
         raise HTTPException(status_code=404, detail="Module introuvable.")
 
     if not module.learning_outcomes:

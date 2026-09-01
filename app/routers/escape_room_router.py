@@ -39,11 +39,6 @@ async def generate_escape_room(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Fiche module introuvable.",
             )
-        if entry.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Non autorisé à accéder à cette fiche module.",
-            )
         learning_outcomes = entry.learning_outcomes
         key_concepts = entry.key_concepts
         keywords = entry.keywords

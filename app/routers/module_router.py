@@ -390,7 +390,7 @@ async def get_analysis_history_item(
 ):
     """Get full details of a specific module analysis history item."""
     entry = session.get(ModuleAnalysis, analysis_id)
-    if not entry or entry.user_id != current_user.id:
+    if not entry:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Fiche module introuvable.",
@@ -427,7 +427,7 @@ async def delete_analysis_history(
             detail="Module analysis history item not found.",
         )
 
-    if entry.user_id != current_user.id:
+    if entry.user_id and entry.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this history item.",
@@ -462,12 +462,6 @@ async def generate_quiz(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Fiche module introuvable.",
-        )
-
-    if entry.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Non autorisé à accéder à cette fiche module.",
         )
 
     # 1.5. If quiz is already generated and force is False, return it

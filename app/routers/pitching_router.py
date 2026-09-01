@@ -76,7 +76,7 @@ async def generate_challenge(
     session: Session = Depends(get_session),
 ):
     module = session.get(ModuleAnalysis, data.module_id)
-    if not module or module.user_id != current_user.id:
+    if not module:
         raise HTTPException(status_code=404, detail="Module introuvable")
 
     if not module.learning_outcomes:
@@ -117,7 +117,7 @@ async def confirm_challenge(
     from app.services.library_service import register_library_item
 
     module = session.get(ModuleAnalysis, data.module_id)
-    if not module or module.user_id != current_user.id:
+    if not module:
         raise HTTPException(status_code=404, detail="Module introuvable")
 
     payload = data.model_dump()

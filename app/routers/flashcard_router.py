@@ -34,8 +34,6 @@ async def generate_flashcards(
     entry = session.get(ModuleAnalysis, data.module_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Fiche module introuvable.")
-    if entry.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Non autorisé à accéder à cette fiche module.")
     if not entry.learning_outcomes:
         raise HTTPException(status_code=400, detail="La fiche module ne contient pas d'acquis d'apprentissage.")
 
