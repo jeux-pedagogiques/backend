@@ -52,22 +52,46 @@ async def generate_flashcards(
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=f"Erreur lors de la génération des flashcards : {str(e)}")
 
+    cartes_list = []
+    if isinstance(flashcard_data, list):
+        cartes_list = flashcard_data
+    elif isinstance(flashcard_data, dict):
+        cartes_list = (
+            flashcard_data.get("cartes")
+            or flashcard_data.get("cards")
+            or flashcard_data.get("flashcards")
+            or flashcard_data.get("items")
+            or []
+        )
+
+    title = "Flashcards"
+    if isinstance(flashcard_data, dict) and flashcard_data.get("titre"):
+        title = flashcard_data.get("titre")
+    elif entry.module_title:
+        title = f"Flashcards - {entry.module_title}"
+
     flashcard_set = FlashcardSet(
         user_id=current_user.id,
         module_id=data.module_id,
-        titre=flashcard_data.get("titre", "Flashcards"),
-        nb_cartes=len(flashcard_data.get("cartes", [])),
+        titre=title,
+        nb_cartes=len(cartes_list),
     )
     session.add(flashcard_set)
     session.flush()
 
-    for i, carte in enumerate(flashcard_data.get("cartes", [])):
+    for i, carte in enumerate(cartes_list):
+        if not isinstance(carte, dict):
+            continue
+        recto = carte.get("recto") or carte.get("front") or carte.get("question") or carte.get("terme") or carte.get("concept") or ""
+        verso = carte.get("verso") or carte.get("back") or carte.get("answer") or carte.get("reponse") or carte.get("definition") or ""
+        aa_source = carte.get("aa_source") or carte.get("aa") or carte.get("source") or f"AA{(i % max(len(entry.learning_outcomes or [1]), 1)) + 1}"
+        niveau_bloom = carte.get("niveau_bloom") or carte.get("bloom") or carte.get("bloom_level") or "memoriser"
         card = Flashcard(
             set_id=flashcard_set.id,
-            recto=carte.get("recto", ""),
-            verso=carte.get("verso", ""),
-            aa_source=carte.get("aa_source", ""),
-            niveau_bloom=carte.get("niveau_bloom", ""),
+            recto=str(recto),
+            verso=str(verso),
+            aa_source=str(aa_source),
+            niveau_bloom=str(niveau_bloom),
             ordre=i + 1,
         )
         session.add(card)

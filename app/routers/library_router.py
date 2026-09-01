@@ -235,6 +235,16 @@ async def get_game_detail(
                 data["pitching_data"] = json.loads(game.description)
             except Exception:
                 pass
+    elif game_type == "mindmap":
+        from app.models.mindmap import MindMapNode
+        nodes = session.exec(
+            select(MindMapNode).where(MindMapNode.mindmap_id == game_id)
+        ).all()
+        data["nodes"] = [
+            {k: getattr(n, k) for k in n.__fields__}
+            for n in nodes
+        ]
+        data["titre"] = f"Mind Map : {game.concept_central}"
 
     # Add module info
     module_id = game.analysis_id if game_type == "escape_room" else getattr(game, "module_id", None)

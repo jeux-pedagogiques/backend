@@ -15,6 +15,8 @@ from app.models.quiz import Quiz
 from app.models.cas_etude import CasEtude
 from app.models.debat import Debat
 from app.models.storytelling import Storytelling
+from app.models.mindmap import MindMap
+from app.models.atelier_feedback import AtelierFeedback
 from app.models.module_analysis import ModuleAnalysis
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,8 @@ GAME_TYPE_MAP: dict[str, type] = {
     "cas_etude": CasEtude,
     "debat": Debat,
     "storytelling": Storytelling,
+    "mindmap": MindMap,
+    "atelier_feedback": AtelierFeedback,
 }
 
 
@@ -85,8 +89,11 @@ def _get_title_field(game_type: str, game) -> str:
         "quiz": "titre",
         "cas_etude": "titre",
         "debat": "problematique",
+        "storytelling": "titre",
+        "mindmap": "concept_central",
+        "atelier_feedback": "titre",
     }
-    return getattr(game, title_map.get(game_type, "titre"), "Sans titre")
+    return getattr(game, title_map.get(game_type, "titre"), getattr(game, "concept_central", "Sans titre"))
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +204,28 @@ def duplicate_game(
             fiche_animateur=copy.deepcopy(original.fiche_animateur),
             fiche_participant=copy.deepcopy(original.fiche_participant),
             criteres_evaluation=copy.deepcopy(original.criteres_evaluation or []),
+        )
+        session.add(dup)
+        session.flush()
+
+    elif game_type == "mindmap":
+        dup = MindMap(
+            user_id=user_id,
+            module_id=new_module_id or original.module_id,
+            concept_central=f"{original.concept_central} (copie)",
+            branches_suggerees=copy.deepcopy(original.branches_suggerees or []),
+        )
+        session.add(dup)
+        session.flush()
+
+    elif game_type == "atelier_feedback":
+        dup = AtelierFeedback(
+            prof_id=user_id,
+            module_id=new_module_id or original.module_id,
+            titre=f"{original.titre} (copie)",
+            criteres=copy.deepcopy(original.criteres or []),
+            structure_grille=copy.deepcopy(original.structure_grille or {}),
+            anonyme=original.anonyme,
         )
         session.add(dup)
         session.flush()
